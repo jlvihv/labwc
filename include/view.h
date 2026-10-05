@@ -282,6 +282,8 @@ struct view {
 		struct wl_signal new_app_id;
 		struct wl_signal new_title;
 		struct wl_signal new_outputs;
+		/* Emitted when view->current changes (see view_moved()) */
+		struct wl_signal new_geometry;
 		struct wl_signal maximized;
 		struct wl_signal minimized;
 		struct wl_signal fullscreened;

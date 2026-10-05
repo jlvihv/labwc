@@ -16,6 +16,21 @@ wayland_scanner_server = generator(
 server_protocols = [
 	'wlr-layer-shell-unstable-v1.xml',
 	'wlr-output-power-management-unstable-v1.xml',
+	'cosmic-toplevel-info-unstable-v1.xml',
+	'cosmic-workspace-unstable-v1.xml',
+	#
+	# The cosmic toplevel info protocol is an extension of the foreign
+	# toplevel list protocol and also references the cosmic workspace
+	# protocol from its deprecated workspace_enter/workspace_leave events.
+	# wayland-scanner needs the interface definitions of everything a
+	# protocol references, so pull those in from wayland-protocols.
+	#
+	# Note that wlroots keeps its own (hidden) copies of these interface
+	# definitions. Duplicating them is safe because interface types are
+	# matched by name rather than by pointer (see wl_interface_equal()).
+	#
+	wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+	wl_protocol_dir / 'staging/ext-workspace/ext-workspace-v1.xml',
 ]
 
 server_protos_src = []

@@ -567,6 +567,14 @@ view_moved(struct view *view)
 	if (rc.resize_indicator && server.grabbed_view == view) {
 		resize_indicator_update(view);
 	}
+
+	/*
+	 * view->current is in sync with the scene-graph at this point, so let
+	 * users of the geometry (e.g. the foreign-toplevel implementations)
+	 * know about it. Interactive move/resize emit this once per frame;
+	 * listeners are expected to filter out no-op updates.
+	 */
+	wl_signal_emit_mutable(&view->events.new_geometry, NULL);
 }
 
 void
@@ -2472,6 +2480,7 @@ view_init(struct view *view)
 	wl_signal_init(&view->events.new_app_id);
 	wl_signal_init(&view->events.new_title);
 	wl_signal_init(&view->events.new_outputs);
+	wl_signal_init(&view->events.new_geometry);
 	wl_signal_init(&view->events.maximized);
 	wl_signal_init(&view->events.minimized);
 	wl_signal_init(&view->events.fullscreened);
@@ -2562,6 +2571,7 @@ view_destroy(struct view *view)
 	assert(wl_list_empty(&view->events.new_app_id.listener_list));
 	assert(wl_list_empty(&view->events.new_title.listener_list));
 	assert(wl_list_empty(&view->events.new_outputs.listener_list));
+	assert(wl_list_empty(&view->events.new_geometry.listener_list));
 	assert(wl_list_empty(&view->events.maximized.listener_list));
 	assert(wl_list_empty(&view->events.minimized.listener_list));
 	assert(wl_list_empty(&view->events.fullscreened.listener_list));
