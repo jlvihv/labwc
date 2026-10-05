@@ -17,6 +17,7 @@ server_protocols = [
 	'wlr-layer-shell-unstable-v1.xml',
 	'wlr-output-power-management-unstable-v1.xml',
 	'cosmic-toplevel-info-unstable-v1.xml',
+	'labwc-control-v1.xml',
 	'cosmic-workspace-unstable-v1.xml',
 	#
 	# The cosmic toplevel info protocol is an extension of the foreign

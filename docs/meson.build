@@ -9,7 +9,7 @@ if scdoc.found()
     'labwc-theme.5',
     'labwc-philosophy.7',
     'labnag.1',
-    'labwc-toplevels.1',
+    'labwcctl.1',
   ]
   foreach manpage : manpages
     markdown = manpage + '.scd'

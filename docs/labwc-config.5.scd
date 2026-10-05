@@ -1646,6 +1646,7 @@ This is the full list of interfaces that can be controlled with this mechanism:
 - `ext_workspace_manager_v1`
 - `ext_image_copy_capture_manager_v1`
 - `ext_output_image_capture_source_manager_v1`
+- `labwc_control_v1`
 
 ## ENVIRONMENT VARIABLES
 

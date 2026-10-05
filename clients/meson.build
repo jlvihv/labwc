@@ -61,35 +61,37 @@ clients = files('lab-sensible-terminal')
 install_data(clients, install_dir: get_option('bindir'))
 
 #
-# labwc-toplevels
+# labwcctl
 #
 # Reads the toplevel list, state and geometry exposed via
-# ext-foreign-toplevel-list-v1 and zcosmic-toplevel-info-v1.
+# ext-foreign-toplevel-list-v1 and zcosmic-toplevel-info-v1, and sets geometry
+# via labwc_control_v1.
 #
 # The cosmic protocols are vendored in protocols/, but wayland-scanner needs
 # the interface definitions of the protocols they reference as well, hence
 # the ext-* entries below.
 #
-toplevels_wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
+ctl_wl_protocol_dir = wayland_protos.get_variable('pkgdatadir')
 
-toplevels_protocols = [
-  toplevels_wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
-  toplevels_wl_protocol_dir / 'staging/ext-workspace/ext-workspace-v1.xml',
+ctl_protocols = [
+  ctl_wl_protocol_dir / 'staging/ext-foreign-toplevel-list/ext-foreign-toplevel-list-v1.xml',
+  ctl_wl_protocol_dir / 'staging/ext-workspace/ext-workspace-v1.xml',
   '../protocols/cosmic-workspace-unstable-v1.xml',
   '../protocols/cosmic-toplevel-info-unstable-v1.xml',
+  '../protocols/labwc-control-v1.xml',
 ]
 
-toplevels_sources = files('labwc-toplevels.c')
+ctl_sources = files('labwcctl.c')
 
-foreach xml : toplevels_protocols
-  toplevels_sources += custom_target(
-    'toplevels_' + xml.underscorify() + '_c',
+foreach xml : ctl_protocols
+  ctl_sources += custom_target(
+    'ctl_' + xml.underscorify() + '_c',
     input: xml,
     output: '@BASENAME@-protocol.c',
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
   )
-  toplevels_sources += custom_target(
-    'toplevels_' + xml.underscorify() + '_client_h',
+  ctl_sources += custom_target(
+    'ctl_' + xml.underscorify() + '_client_h',
     input: xml,
     output: '@BASENAME@-client-protocol.h',
     command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
@@ -97,8 +99,8 @@ foreach xml : toplevels_protocols
 endforeach
 
 executable(
-  'labwc-toplevels',
-  toplevels_sources,
+  'labwcctl',
+  ctl_sources,
   dependencies: [dependency('wayland-client')],
   include_directories: [labwc_inc],
   install: true,

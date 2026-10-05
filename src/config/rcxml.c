@@ -119,6 +119,7 @@ parse_privileged_interface(const char *name)
 		"ext_workspace_manager_v1",
 		"ext_image_copy_capture_manager_v1",
 		"ext_output_image_capture_source_manager_v1",
+		"labwc_control_v1",
 	};
 
 	static_assert(ARRAY_SIZE(ifaces) <= 32,

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="labwc_control_v1">
+  <copyright>
+    Copyright (C) 2026 labwc contributors
+
+    This is free software: you can redistribute it and/or modify it under
+    the terms of the GNU General Public License as published by the Free
+    Software Foundation, version 2 only.
+  </copyright>
+
+  <interface name="labwc_control_v1" version="1">
+    <description summary="control toplevel geometry">
+      This protocol allows privileged clients to set the absolute geometry of
+      a toplevel owned by another client.
+
+      There is no standard protocol for this. The wlr- and ext-foreign-toplevel
+      protocols expose a toplevel's state and allow requests to activate,
+      close, maximize, minimize and fullscreen it, but not to move or resize
+      it. Anything that needs to lay out windows itself - a tiler, a tiling
+      script, a window switcher with previews, or an automation tool - has to
+      rely on this or a private IPC mechanism instead.
+
+      Toplevels are identified with the handles provided by
+      ext-foreign-toplevel-list-v1, so that a client can match what
+      zcosmic-toplevel-info-v1 told it about geometry and state with what it
+      is allowed to change here.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the labwc_control_v1 object"/>
+    </request>
+
+    <request name="get_toplevel">
+      <description summary="extend an existing foreign toplevel handle">
+        Request a labwc_control_toplevel_v1 for an existing
+        ext_foreign_toplevel_handle_v1.
+
+        The compositor may ignore all requests on the returned object if the
+        toplevel is not currently managed by labwc, for example because it has
+        already been closed.
+      </description>
+      <arg name="control_toplevel" type="new_id" interface="labwc_control_toplevel_v1"/>
+      <arg name="foreign_toplevel" type="object" interface="ext_foreign_toplevel_handle_v1"/>
+    </request>
+  </interface>
+
+  <interface name="labwc_control_toplevel_v1" version="1">
+    <description summary="set the geometry of a toplevel">
+      All coordinates are in the compositor's global layout coordinate space,
+      the same space wl_output.geometry reports output positions in.
+
+      Requests are applied immediately and are not acknowledged with an event.
+      Clients wanting to know whether a request had the intended effect should
+      watch the geometry event of the corresponding zcosmic_toplevel_handle_v1.
+
+      Because an absolute geometry is only meaningful for a floating view, the
+      compositor takes the view out of any state that would otherwise override
+      it (fullscreen, maximized, tiled, shaded) before applying the request.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the labwc_control_toplevel_v1 object"/>
+    </request>
+
+    <request name="move_to">
+      <description summary="move the toplevel to the given position">
+        The position is the upper left corner of the window frame, including
+        decorations.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <request name="resize_to">
+      <description summary="resize the toplevel">
+        The size is the size of the window frame, including decorations. The
+        current position is kept.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+
+    <request name="move_resize_to">
+      <description summary="move and resize the toplevel in one step">
+        Equivalent to move_to followed by resize_to, but avoids an
+        intermediate configure and the redraw that would go with it.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+  </interface>
+</protocol>

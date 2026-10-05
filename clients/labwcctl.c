@@ -1,44 +1,60 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * labwc-toplevels - print the geometry and state of all toplevels as JSON
+ * labwcctl - query and control toplevels
  *
- * The toplevel list comes from ext-foreign-toplevel-list-v1, which provides
- * a stable identifier for each toplevel. Geometry, state and output
- * membership come from zcosmic-toplevel-info-v1.
+ * 'list' prints a JSON snapshot of every toplevel: its stable identifier, its
+ * state, and its geometry. The toplevel list comes from
+ * ext-foreign-toplevel-list-v1, geometry and state come from
+ * zcosmic-toplevel-info-v1.
+ *
+ * 'move', 'resize' and 'move-resize' set the absolute geometry of matching
+ * toplevels via labwc_control_v1, which is the only way to do this: the
+ * standard foreign-toplevel protocols allow a request to activate, close,
+ * maximize, minimize and fullscreen a toplevel, but not to move or resize it.
  *
  * Note that zcosmic-toplevel-info-v1 reports geometry relative to the output
- * the toplevel is visible on. This tool resolves each output's position from
- * wl_output.geometry and also reports compositor-global coordinates.
+ * a toplevel is on. This tool resolves each output's position from
+ * wl_output.geometry and reports compositor-global coordinates, which is also
+ * the coordinate space labwc_control_v1 expects.
  *
  * Examples:
- *   labwc-toplevels              # one snapshot, then exit
- *   labwc-toplevels --watch      # a snapshot whenever something changes
- *   labwc-toplevels | jq -r '.[] | "\(.app_id) \(.geometry[0].global_x),\(.geometry[0].global_y)"'
+ *   labwcctl list
+ *   labwcctl list --watch
+ *   labwcctl move 'app_id:foot' 100 100
+ *   labwcctl move-resize 1c6ecfaa9a06140a4d3d54e54d4d8e06 0 0 640 480
+ *   labwcctl list | jq -r '.[] | "\(.app_id) \(.geometry[0].global_x),\(.geometry[0].global_y)"'
  */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <getopt.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
 
 #include "cosmic-toplevel-info-unstable-v1-client-protocol.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
+#include "labwc-control-v1-client-protocol.h"
 
 /*
- * Version 2 is where the geometry event was introduced. Clients binding
- * version 2 get their handles from get_cosmic_toplevel() and rely on
- * ext-foreign-toplevel-list-v1 for title/app_id/closed.
+ * Version 2 is where the geometry event of zcosmic_toplevel_info_v1 was
+ * introduced. Clients binding version 2 get their handles from
+ * get_cosmic_toplevel() and rely on ext-foreign-toplevel-list-v1 for
+ * title/app_id/closed.
  */
 #define COSMIC_TOPLEVEL_INFO_VERSION 2
 
 #define MAX_GEOMETRIES 16
 #define MAX_STATES 8
 #define MAX_ROUNDTRIPS 10
+/* How long to wait for the compositor and the client to agree on a new geometry */
+#define GEOMETRY_TIMEOUT_MS 500
 
 struct output {
 	struct wl_output *wl_output;
@@ -57,6 +73,7 @@ struct geometry {
 struct toplevel {
 	struct ext_foreign_toplevel_handle_v1 *foreign;
 	struct zcosmic_toplevel_handle_v1 *cosmic;
+	struct labwc_control_toplevel_v1 *control;
 	char *title;
 	char *app_id;
 	char *identifier;
@@ -67,19 +84,40 @@ struct toplevel {
 	uint32_t states[MAX_STATES];
 	size_t nr_states;
 
+	bool selected;
 	struct wl_list link;
+};
+
+enum selector_type {
+	SELECTOR_IDENTIFIER,
+	SELECTOR_APP_ID,
+	SELECTOR_TITLE,
+	SELECTOR_ALL,
+};
+
+struct selector {
+	enum selector_type type;
+	const char *value;
+};
+
+enum control_command {
+	CONTROL_MOVE,
+	CONTROL_RESIZE,
+	CONTROL_MOVE_RESIZE,
 };
 
 static struct wl_display *display;
 static struct wl_list outputs;
 static struct wl_list toplevels;
 static struct zcosmic_toplevel_info_v1 *toplevel_info;
+static struct labwc_control_v1 *control;
 static unsigned int pending_handles;
+static unsigned int geometry_events;
 static bool updated;
 
 /*
  * wl_output.geometry make/model and wl_output.name may be NULL, whereas
- * xstrdup() requires a non-NULL source.
+ * strdup() requires a non-NULL source.
  */
 static void
 replace_string(char **dst, const char *src)
@@ -106,6 +144,14 @@ zalloc(size_t size)
 		exit(EXIT_FAILURE);
 	}
 	return ptr;
+}
+
+static int64_t
+now_ms(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 /* ------------------------------- output ------------------------------- */
@@ -186,6 +232,8 @@ cosmic_geometry(void *data, struct zcosmic_toplevel_handle_v1 *handle,
 	struct toplevel *toplevel = data;
 	size_t i;
 
+	geometry_events++;
+
 	for (i = 0; i < toplevel->nr_geometries; i++) {
 		struct geometry *geometry = &toplevel->geometries[i];
 		if (geometry->wl_output == wl_output) {
@@ -250,10 +298,7 @@ cosmic_state(void *data, struct zcosmic_toplevel_handle_v1 *handle,
 static void
 cosmic_done(void *data, struct zcosmic_toplevel_handle_v1 *handle)
 {
-	/*
-	 * Not emitted for clients binding version 2, which use the done event
-	 * on zcosmic_toplevel_info_v1 instead.
-	 */
+	/* Not emitted for clients binding version 2 */
 }
 
 static void
@@ -350,9 +395,12 @@ foreign_closed(void *data, struct ext_foreign_toplevel_handle_v1 *handle)
 	struct toplevel *toplevel = data;
 
 	/*
-	 * All of our proxies for this toplevel are now useless, including the
-	 * cosmic one, so tear the whole thing down.
+	 * All of our proxies for this toplevel are now useless, so tear the
+	 * whole thing down.
 	 */
+	if (toplevel->control) {
+		labwc_control_toplevel_v1_destroy(toplevel->control);
+	}
 	if (toplevel->cosmic) {
 		zcosmic_toplevel_handle_v1_destroy(toplevel->cosmic);
 	}
@@ -463,6 +511,9 @@ registry_global(void *data, struct wl_registry *registry, uint32_t name,
 			&zcosmic_toplevel_info_v1_interface, bind_version);
 		zcosmic_toplevel_info_v1_add_listener(toplevel_info,
 			&info_listener, NULL);
+	} else if (!strcmp(interface, labwc_control_v1_interface.name)) {
+		control = wl_registry_bind(registry, name,
+			&labwc_control_v1_interface, 1);
 	}
 }
 
@@ -476,7 +527,82 @@ static const struct wl_registry_listener registry_listener = {
 	.global_remove = registry_global_remove,
 };
 
-/* ------------------------------- output ------------------------------- */
+/* ------------------------------ selectors ----------------------------- */
+
+static bool
+selector_parse(const char *arg, struct selector *selector)
+{
+	if (!*arg) {
+		return false;
+	}
+	if (!strcmp(arg, "*")) {
+		selector->type = SELECTOR_ALL;
+		return true;
+	}
+	if (!strncmp(arg, "app_id:", 7)) {
+		selector->type = SELECTOR_APP_ID;
+		selector->value = arg + 7;
+		return *selector->value;
+	}
+	if (!strncmp(arg, "title:", 6)) {
+		selector->type = SELECTOR_TITLE;
+		selector->value = arg + 6;
+		return *selector->value;
+	}
+	if (!strncmp(arg, "identifier:", 11)) {
+		selector->type = SELECTOR_IDENTIFIER;
+		selector->value = arg + 11;
+		return *selector->value;
+	}
+	/* A bare argument is an ext-foreign-toplevel identifier */
+	selector->type = SELECTOR_IDENTIFIER;
+	selector->value = arg;
+	return true;
+}
+
+static bool
+selector_matches(struct selector *selector, struct toplevel *toplevel)
+{
+	const char *value = NULL;
+
+	switch (selector->type) {
+	case SELECTOR_ALL:
+		return true;
+	case SELECTOR_APP_ID:
+		value = toplevel->app_id;
+		break;
+	case SELECTOR_TITLE:
+		value = toplevel->title;
+		break;
+	case SELECTOR_IDENTIFIER:
+		value = toplevel->identifier;
+		break;
+	}
+	return value && !strcmp(value, selector->value);
+}
+
+static unsigned int
+select_toplevels(struct selector *selector)
+{
+	struct toplevel *toplevel;
+	unsigned int matches = 0;
+
+	wl_list_for_each(toplevel, &toplevels, link) {
+		toplevel->selected = selector_matches(selector, toplevel);
+		if (!toplevel->selected) {
+			continue;
+		}
+		matches++;
+		if (!toplevel->control && control) {
+			toplevel->control = labwc_control_v1_get_toplevel(control,
+				toplevel->foreign);
+		}
+	}
+
+	return matches;
+}
+
+/* -------------------------------- output ------------------------------ */
 
 static const char *state_names[] = {
 	"maximized",
@@ -581,13 +707,180 @@ print_snapshot(void)
 	fflush(stdout);
 }
 
+/* ------------------------------- waiting ------------------------------ */
+
+/*
+ * Dispatch events until at least <count> geometry events have been received or
+ * <timeout_ms> have passed. Moving a window is not synchronous: the
+ * compositor has to send a configure, the client has to commit, and only then
+ * does the compositor report the new geometry.
+ */
+static bool
+wait_for_geometry(unsigned int count, int timeout_ms)
+{
+	int64_t deadline = now_ms() + timeout_ms;
+	struct pollfd pfd = {
+		.fd = wl_display_get_fd(display),
+		.events = POLLIN,
+	};
+
+	while (geometry_events < count) {
+		int64_t remaining = deadline - now_ms();
+		if (remaining <= 0) {
+			break;
+		}
+
+		while (wl_display_prepare_read(display) != 0) {
+			if (wl_display_dispatch_pending(display) == -1) {
+				return false;
+			}
+		}
+		if (wl_display_flush(display) == -1 && errno != EAGAIN) {
+			wl_display_cancel_read(display);
+			return false;
+		}
+
+		int ret = poll(&pfd, 1, (int)remaining);
+		if (ret <= 0) {
+			wl_display_cancel_read(display);
+			break;
+		}
+		if (wl_display_read_events(display) == -1) {
+			return false;
+		}
+		if (wl_display_dispatch_pending(display) == -1) {
+			return false;
+		}
+	}
+
+	return geometry_events >= count;
+}
+
+/* ------------------------------- commands ----------------------------- */
+
+static void
+list_command(bool watch)
+{
+	if (!watch) {
+		/*
+		 * get_cosmic_toplevel() requests were queued while dispatching
+		 * the toplevel events above and their replies arrive in later
+		 * roundtrips, so keep spinning until every handle has been
+		 * reported on.
+		 */
+		for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
+			if (wl_display_roundtrip(display) == -1) {
+				break;
+			}
+		}
+		print_snapshot();
+		return;
+	}
+
+	while (wl_display_dispatch(display) != -1) {
+		if (updated) {
+			updated = false;
+			print_snapshot();
+		}
+	}
+}
+
+static int
+control_command(struct selector *selector, enum control_command command,
+		int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	if (!control) {
+		fprintf(stderr, "compositor does not support labwc_control_v1\n");
+		return 1;
+	}
+
+	/* Settle before matching, so that identifiers and geometry are known */
+	for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
+		if (wl_display_roundtrip(display) == -1) {
+			fprintf(stderr, "error communicating with the compositor\n");
+			return 1;
+		}
+	}
+
+	unsigned int matches = select_toplevels(selector);
+	if (!matches) {
+		fprintf(stderr, "no toplevel matches the given selector\n");
+		return 1;
+	}
+
+	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (!toplevel->selected || !toplevel->control) {
+			continue;
+		}
+		switch (command) {
+		case CONTROL_MOVE:
+			labwc_control_toplevel_v1_move_to(toplevel->control, x, y);
+			break;
+		case CONTROL_RESIZE:
+			labwc_control_toplevel_v1_resize_to(toplevel->control,
+				width, height);
+			break;
+		case CONTROL_MOVE_RESIZE:
+			labwc_control_toplevel_v1_move_resize_to(toplevel->control,
+				x, y, width, height);
+			break;
+		}
+	}
+
+	/*
+	 * Report where the windows ended up rather than what we asked for, so
+	 * that callers can tell whether the request had the intended effect.
+	 */
+	if (!wait_for_geometry(geometry_events + matches,
+			GEOMETRY_TIMEOUT_MS)) {
+		fprintf(stderr, "timed out waiting for the new geometry\n");
+	}
+	print_snapshot();
+	return 0;
+}
+
+static int
+parse_int(const char *str, int32_t *value)
+{
+	char *end = NULL;
+	long parsed;
+
+	errno = 0;
+	parsed = strtol(str, &end, 10);
+	if (errno || end == str || *end || parsed < INT32_MIN
+			|| parsed > INT32_MAX) {
+		return -1;
+	}
+	*value = (int32_t)parsed;
+	return 0;
+}
+
 static void
 usage(const char *argv0)
 {
 	fprintf(stderr,
-		"Usage: %s [options...]\n"
+		"Usage: %s <command> [args...]\n"
+		"\n"
+		"Commands:\n"
+		"  list                                  Print a JSON snapshot of all toplevels\n"
+		"  move <selector> <x> <y>               Move matching toplevels\n"
+		"  resize <selector> <width> <height>    Resize matching toplevels\n"
+		"  move-resize <selector> <x> <y> <width> <height>\n"
+		"                                        Move and resize matching toplevels\n"
+		"\n"
+		"Options:\n"
 		"  -h, --help    Show help message and quit\n"
-		"  -w, --watch   Print a new snapshot whenever something changes\n",
+		"  -w, --watch   With 'list': print a new snapshot on every change\n"
+		"\n"
+		"Selectors:\n"
+		"  <identifier>       Exact ext-foreign-toplevel identifier\n"
+		"  identifier:<str>   Same as above, explicitly\n"
+		"  app_id:<str>       Exact match on the application ID\n"
+		"  title:<str>        Exact match on the window title\n"
+		"  *                  All toplevels\n"
+		"\n"
+		"Coordinates are in the compositor's global layout coordinate space.\n",
 		argv0);
 	exit(1);
 }
@@ -612,7 +905,45 @@ main(int argc, char **argv)
 			usage(argv[0]);
 		}
 	}
-	if (optind < argc) {
+	if (optind >= argc) {
+		usage(argv[0]);
+	}
+
+	const char *command = argv[optind];
+	int nr_args = argc - optind - 1;
+	char **args = &argv[optind + 1];
+	struct selector selector = { 0 };
+	int32_t x = 0, y = 0, width = 0, height = 0;
+	enum control_command control_command_type = CONTROL_MOVE;
+
+	if (!strcmp(command, "list")) {
+		if (nr_args) {
+			usage(argv[0]);
+		}
+	} else if (!strcmp(command, "move")) {
+		if (nr_args != 3 || !selector_parse(args[0], &selector)
+				|| parse_int(args[1], &x)
+				|| parse_int(args[2], &y)) {
+			usage(argv[0]);
+		}
+		control_command_type = CONTROL_MOVE;
+	} else if (!strcmp(command, "resize")) {
+		if (nr_args != 3 || !selector_parse(args[0], &selector)
+				|| parse_int(args[1], &width)
+				|| parse_int(args[2], &height)) {
+			usage(argv[0]);
+		}
+		control_command_type = CONTROL_RESIZE;
+	} else if (!strcmp(command, "move-resize")) {
+		if (nr_args != 5 || !selector_parse(args[0], &selector)
+				|| parse_int(args[1], &x)
+				|| parse_int(args[2], &y)
+				|| parse_int(args[3], &width)
+				|| parse_int(args[4], &height)) {
+			usage(argv[0]);
+		}
+		control_command_type = CONTROL_MOVE_RESIZE;
+	} else {
 		usage(argv[0]);
 	}
 
@@ -641,29 +972,11 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	if (!watch) {
-		/*
-		 * get_cosmic_toplevel() requests were queued while dispatching
-		 * the toplevel events above and their replies arrive in later
-		 * roundtrips, so keep spinning until every handle has been
-		 * reported on.
-		 */
-		for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
-			if (wl_display_roundtrip(display) == -1) {
-				break;
-			}
-		}
-		print_snapshot();
+	if (!strcmp(command, "list")) {
+		list_command(watch);
 		return 0;
 	}
 
-	while (wl_display_dispatch(display) != -1) {
-		if (updated) {
-			updated = false;
-			print_snapshot();
-		}
-	}
-
-	fprintf(stderr, "error communicating with the compositor\n");
-	return 1;
+	return control_command(&selector, control_command_type,
+		x, y, width, height);
 }

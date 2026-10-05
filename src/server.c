@@ -58,6 +58,7 @@
 #include "common/scene-helpers.h"
 #include "config/rcxml.h"
 #include "config/session.h"
+#include "control.h"
 #include "decorations.h"
 #include "desktop-entry.h"
 #include "foreign-toplevel/cosmic.h"
@@ -798,6 +799,8 @@ server_init(void)
 			server.wl_display, LAB_EXT_FOREIGN_TOPLEVEL_LIST_VERSION);
 
 	cosmic_toplevel_create_global(server.wl_display);
+
+	control_create_global(server.wl_display);
 
 	wlr_alpha_modifier_v1_create(server.wl_display);
 
