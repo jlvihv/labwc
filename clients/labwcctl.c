@@ -7,10 +7,13 @@
  * ext-foreign-toplevel-list-v1, geometry and state come from
  * zcosmic-toplevel-info-v1.
  *
- * 'move', 'resize' and 'move-resize' set the absolute geometry of matching
- * toplevels via labwc_control_v1, which is the only way to do this: the
- * standard foreign-toplevel protocols allow a request to activate, close,
- * maximize, minimize and fullscreen a toplevel, but not to move or resize it.
+ * The other commands act on matching toplevels through labwc_control_v1:
+ * 'move', 'resize' and 'move-resize' set the absolute geometry, 'focus'
+ * activates, and 'close' asks the client to close. That protocol is the only
+ * way to do any of this: the standard foreign-toplevel protocols allow a
+ * request to activate, close, maximize, minimize and fullscreen a toplevel,
+ * but not to move or resize it, and their handles cannot be correlated with
+ * the stable identifier this tool selects on.
  *
  * Note that zcosmic-toplevel-info-v1 reports geometry relative to the output
  * a toplevel is on. This tool resolves each output's position from
@@ -20,9 +23,10 @@
  * Examples:
  *   labwcctl list
  *   labwcctl list --watch
+ *   labwcctl focus 'app_id:foot'
  *   labwcctl move 'app_id:foot' 100 100
  *   labwcctl move-resize 1c6ecfaa9a06140a4d3d54e54d4d8e06 0 0 640 480
- *   labwcctl list | jq -r '.[] | "\(.app_id) \(.geometry[0].global_x),\(.geometry[0].global_y)"'
+ *   labwcctl close '*'
  */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -53,8 +57,8 @@
 #define MAX_GEOMETRIES 16
 #define MAX_STATES 8
 #define MAX_ROUNDTRIPS 10
-/* How long to wait for the compositor and the client to agree on a new geometry */
-#define GEOMETRY_TIMEOUT_MS 500
+/* How long to wait for the compositor and the client to agree on a change */
+#define CONTROL_TIMEOUT_MS 500
 
 struct output {
 	struct wl_output *wl_output;
@@ -104,6 +108,8 @@ enum control_command {
 	CONTROL_MOVE,
 	CONTROL_RESIZE,
 	CONTROL_MOVE_RESIZE,
+	CONTROL_ACTIVATE,
+	CONTROL_CLOSE,
 };
 
 static struct wl_display *display;
@@ -113,6 +119,7 @@ static struct zcosmic_toplevel_info_v1 *toplevel_info;
 static struct labwc_control_v1 *control;
 static unsigned int pending_handles;
 static unsigned int geometry_events;
+static unsigned int geometry_target;
 static bool updated;
 
 /*
@@ -710,13 +717,15 @@ print_snapshot(void)
 /* ------------------------------- waiting ------------------------------ */
 
 /*
- * Dispatch events until at least <count> geometry events have been received or
- * <timeout_ms> have passed. Moving a window is not synchronous: the
- * compositor has to send a configure, the client has to commit, and only then
- * does the compositor report the new geometry.
+ * Dispatch events until <done>() returns true or <timeout_ms> have passed.
+ *
+ * No request of labwc_control_v1 is acknowledged. Moving a window means the
+ * compositor sends a configure, the client has to commit, and only then does
+ * the compositor report the new geometry, so the only way to report what
+ * actually happened is to watch the events that come back.
  */
 static bool
-wait_for_geometry(unsigned int count, int timeout_ms)
+dispatch_until(bool (*done)(void), int timeout_ms)
 {
 	int64_t deadline = now_ms() + timeout_ms;
 	struct pollfd pfd = {
@@ -724,7 +733,7 @@ wait_for_geometry(unsigned int count, int timeout_ms)
 		.events = POLLIN,
 	};
 
-	while (geometry_events < count) {
+	while (!done()) {
 		int64_t remaining = deadline - now_ms();
 		if (remaining <= 0) {
 			break;
@@ -753,7 +762,51 @@ wait_for_geometry(unsigned int count, int timeout_ms)
 		}
 	}
 
-	return geometry_events >= count;
+	return done();
+}
+
+static bool
+geometry_updated(void)
+{
+	return geometry_events >= geometry_target;
+}
+
+static bool
+toplevel_is_activated(struct toplevel *toplevel)
+{
+	for (size_t i = 0; i < toplevel->nr_states; i++) {
+		if (toplevel->states[i]
+				== ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* At least one of the toplevels we acted on is the active window now */
+static bool
+selected_activated(void)
+{
+	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (toplevel->selected && toplevel_is_activated(toplevel)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* All of the toplevels we acted on are gone */
+static bool
+selected_closed(void)
+{
+	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (toplevel->selected) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /* ------------------------------- commands ----------------------------- */
@@ -825,16 +878,36 @@ control_command(struct selector *selector, enum control_command command,
 			labwc_control_toplevel_v1_move_resize_to(toplevel->control,
 				x, y, width, height);
 			break;
+		case CONTROL_ACTIVATE:
+			labwc_control_toplevel_v1_activate(toplevel->control);
+			break;
+		case CONTROL_CLOSE:
+			labwc_control_toplevel_v1_close(toplevel->control);
+			break;
 		}
 	}
 
 	/*
-	 * Report where the windows ended up rather than what we asked for, so
-	 * that callers can tell whether the request had the intended effect.
+	 * Report what actually happened rather than what we asked for, so that
+	 * callers can tell whether the request had the intended effect.
 	 */
-	if (!wait_for_geometry(geometry_events + matches,
-			GEOMETRY_TIMEOUT_MS)) {
-		fprintf(stderr, "timed out waiting for the new geometry\n");
+	bool ok = false;
+	switch (command) {
+	case CONTROL_MOVE:
+	case CONTROL_RESIZE:
+	case CONTROL_MOVE_RESIZE:
+		geometry_target = geometry_events + matches;
+		ok = dispatch_until(geometry_updated, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_ACTIVATE:
+		ok = dispatch_until(selected_activated, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_CLOSE:
+		ok = dispatch_until(selected_closed, CONTROL_TIMEOUT_MS);
+		break;
+	}
+	if (!ok) {
+		fprintf(stderr, "timed out waiting for the compositor\n");
 	}
 	print_snapshot();
 	return 0;
@@ -868,6 +941,8 @@ usage(const char *argv0)
 		"  resize <selector> <width> <height>    Resize matching toplevels\n"
 		"  move-resize <selector> <x> <y> <width> <height>\n"
 		"                                        Move and resize matching toplevels\n"
+		"  focus <selector>                      Make matching toplevels the active window\n"
+		"  close <selector>                      Ask matching toplevels to close\n"
 		"\n"
 		"Options:\n"
 		"  -h, --help    Show help message and quit\n"
@@ -943,6 +1018,16 @@ main(int argc, char **argv)
 			usage(argv[0]);
 		}
 		control_command_type = CONTROL_MOVE_RESIZE;
+	} else if (!strcmp(command, "focus")) {
+		if (nr_args != 1 || !selector_parse(args[0], &selector)) {
+			usage(argv[0]);
+		}
+		control_command_type = CONTROL_ACTIVATE;
+	} else if (!strcmp(command, "close")) {
+		if (nr_args != 1 || !selector_parse(args[0], &selector)) {
+			usage(argv[0]);
+		}
+		control_command_type = CONTROL_CLOSE;
 	} else {
 		usage(argv[0]);
 	}

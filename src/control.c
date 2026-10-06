@@ -62,6 +62,12 @@ apply_geometry(struct view *view, int32_t x, int32_t y,
 	});
 }
 
+static struct view *
+control_toplevel_get_view(struct control_toplevel *toplevel)
+{
+	return toplevel->ext_handle ? toplevel->ext_handle->data : NULL;
+}
+
 /*
  * Resolve the view and take it out of any state which would override the
  * geometry we are about to set. Callers must read view->pending for any
@@ -71,8 +77,7 @@ apply_geometry(struct view *view, int32_t x, int32_t y,
 static struct view *
 control_toplevel_prepare(struct control_toplevel *toplevel)
 {
-	struct view *view = toplevel->ext_handle
-		? toplevel->ext_handle->data : NULL;
+	struct view *view = control_toplevel_get_view(toplevel);
 	if (view) {
 		ensure_floating(view);
 	}
@@ -122,11 +127,33 @@ toplevel_move_resize_to(struct wl_client *client, struct wl_resource *resource,
 	apply_geometry(view, x, y, width, height);
 }
 
+static void
+toplevel_activate(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		desktop_focus_view(view, /*raise*/ true);
+	}
+}
+
+static void
+toplevel_close(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_close(view);
+	}
+}
+
 static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
 	.destroy = handle_destroy,
 	.move_to = toplevel_move_to,
 	.resize_to = toplevel_resize_to,
 	.move_resize_to = toplevel_move_resize_to,
+	.activate = toplevel_activate,
+	.close = toplevel_close,
 };
 
 static void

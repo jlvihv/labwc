@@ -14,19 +14,27 @@ _labwcctl_ [options...] _resize_ <selector> <width> <height>
 
 _labwcctl_ [options...] _move-resize_ <selector> <x> <y> <width> <height>
 
+_labwcctl_ [options...] _focus_ <selector>
+
+_labwcctl_ [options...] _close_ <selector>
+
 # DESCRIPTION
 
-_labwcctl_ reads the toplevel list, state and geometry, and applies absolute
-geometry to matching toplevels.
+_labwcctl_ reads the toplevel list, state and geometry, and acts on matching
+toplevels.
 
 The toplevel list comes from *ext-foreign-toplevel-list-v1*, which provides a
 stable _identifier_ for each toplevel. Geometry and state come from
-*zcosmic-toplevel-info-v1*. Geometry is set with *labwc_control_v1*, which is
-the only mechanism available for this: the standard foreign-toplevel protocols
-allow a request to activate, close, maximize, minimize and fullscreen a
-toplevel, but not to move or resize it.
+*zcosmic-toplevel-info-v1*. All other commands are carried out with
+*labwc_control_v1*.
 
-The geometry related commands are restricted by the _privilegedInterfaces_
+*labwc_control_v1* is used rather than the standard
+*zwlr_foreign_toplevel_management_v1* because a zwlr handle cannot be
+correlated with an ext handle: only the latter carries the stable identifier
+needed to tell two toplevels with the same title and app id apart. Guessing
+would mean risking acting on the wrong window.
+
+The commands that change something are restricted by the _privilegedInterfaces_
 setting in *rc.xml*. By default all privileged interfaces are allowed. See
 *labwc-config*(5).
 
@@ -53,11 +61,21 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 *move-resize* <selector> <x> <y> <width> <height>
 	Move and resize matching toplevels in one step.
 
-All geometry commands print the resulting snapshot, so that callers can tell
-whether the request had the intended effect. Note that a resize is not
-synchronous: the compositor sends a configure event, the client has to commit
-the new size, and only then is the new geometry reported. _labwcctl_ waits up
-to 500ms for that to happen.
+*focus* <selector>
+	Raise matching toplevels and give them keyboard focus. With more than
+	one match, the last one wins.
+
+*close* <selector>
+	Ask matching toplevels to close. The client is free to ignore this, for
+	example to ask the user to save unsaved changes first, so this does not
+	guarantee that the window goes away.
+
+All commands except _list_ print the resulting snapshot, so that callers can
+tell whether the request had the intended effect. Note that none of these
+requests are acknowledged, and that a resize is not synchronous: the
+compositor sends a configure event, the client has to commit the new size, and
+only then is the new geometry reported. _labwcctl_ waits up to 500ms for that
+to happen.
 
 # SELECTORS
 
@@ -120,6 +138,15 @@ Put every terminal in the top left quadrant:
 Wait for a window to appear:
 
 	labwcctl list --watch | jq -c '.[0]' | head -n 1
+
+Focus a window by its stable identifier:
+
+	id=$(labwcctl list | jq -r '.[] | select(.app_id == "foot") | .identifier')
+	labwcctl focus "$id"
+
+Close every window of an application:
+
+	labwcctl close 'app_id:foot'
 
 # SEE ALSO
 

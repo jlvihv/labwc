@@ -9,16 +9,26 @@
   </copyright>
 
   <interface name="labwc_control_v1" version="1">
-    <description summary="control toplevel geometry">
+    <description summary="control toplevels owned by other clients">
       This protocol allows privileged clients to set the absolute geometry of
-      a toplevel owned by another client.
+      a toplevel owned by another client, to activate it, and to ask it to
+      close.
 
-      There is no standard protocol for this. The wlr- and ext-foreign-toplevel
-      protocols expose a toplevel's state and allow requests to activate,
-      close, maximize, minimize and fullscreen it, but not to move or resize
-      it. Anything that needs to lay out windows itself - a tiler, a tiling
-      script, a window switcher with previews, or an automation tool - has to
-      rely on this or a private IPC mechanism instead.
+      There is no standard protocol for the geometry part. The wlr- and
+      ext-foreign-toplevel protocols expose a toplevel's state and allow
+      requests to activate, close, maximize, minimize and fullscreen it, but
+      not to move or resize it. Anything that needs to lay out windows itself
+      - a tiler, a tiling script, a window switcher with previews, or an
+      automation tool - has to rely on this or a private IPC mechanism
+      instead.
+
+      The activate and close requests do duplicate
+      zwlr_foreign_toplevel_management_v1, but they are provided here as well
+      because there is no way to correlate a zwlr_foreign_toplevel_handle_v1
+      with an ext_foreign_toplevel_handle_v1. Only the latter carries the
+      stable identifier needed to tell two toplevels with the same title and
+      app_id apart, so a client which has identified a toplevel by its
+      identifier would otherwise have to guess which wlr handle belongs to it.
 
       Toplevels are identified with the handles provided by
       ext-foreign-toplevel-list-v1, so that a client can match what
@@ -89,6 +99,33 @@
       <arg name="y" type="int"/>
       <arg name="width" type="int"/>
       <arg name="height" type="int"/>
+    </request>
+
+    <request name="activate">
+      <description summary="make the toplevel the active window">
+        Raises the toplevel and gives it keyboard focus, as if the user had
+        clicked on it or picked it from a taskbar.
+
+        This duplicates a request of zwlr_foreign_toplevel_management_v1. It
+        lives here because there is no way to correlate a
+        zwlr_foreign_toplevel_handle_v1 with the ext_foreign_toplevel_handle_v1
+        this object was created from. Only the latter carries the stable
+        identifier needed to tell two toplevels with the same title and app_id
+        apart, so a client which has identified a toplevel by its identifier
+        would otherwise have to guess which wlr handle belongs to it.
+      </description>
+    </request>
+
+    <request name="close">
+      <description summary="ask the client to close the toplevel">
+        The client is free to ignore this, for example to ask the user to save
+        unsaved changes first, so this does not guarantee that the toplevel
+        goes away. Clients should watch for the closed event of the
+        corresponding ext_foreign_toplevel_handle_v1.
+
+        This duplicates a request of zwlr_foreign_toplevel_management_v1 for
+        the same reason as activate.
+      </description>
     </request>
   </interface>
 </protocol>
