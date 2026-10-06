@@ -158,6 +158,13 @@ toplevel, a client that snaps its size to a grid, and a client that declines
 to close all look the same. A wait that finds nothing is therefore not an
 error, and the snapshot is the answer.
 
+The three properties which *zcosmic-toplevel-info-v1* does not report - the
+layer, whether the toplevel is shaded, and its decoration mode - are read back
+from *labwc_control_v1* instead. Those commands are therefore verified: a
+value in the snapshot which does not match what was asked for means the
+request was refused, which is reported on stderr. This also means _list_ can
+report them, as _null_ if the compositor does not offer *labwc_control_v1*.
+
 # SELECTORS
 
 The first argument of every geometry command selects which toplevels to act
@@ -195,6 +202,18 @@ _identifier_
 _states_
 	Any of _maximized_, _minimized_, _activated_, _fullscreen_ and
 	_sticky_.
+
+_layer_
+	Any of _normal_, _top_ and _bottom_, or _null_ if the compositor does
+	not offer *labwc_control_v1*.
+
+_shaded_
+	Whether the toplevel is rolled up, or _null_ if the compositor does
+	not offer *labwc_control_v1*.
+
+_decorations_
+	Any of _none_, _border_ and _full_, or _null_ if the compositor does
+	not offer *labwc_control_v1*.
 
 _geometry_
 	An array with one entry per output the toplevel is visible on. Each

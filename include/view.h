@@ -289,6 +289,9 @@ struct view {
 		struct wl_signal maximized;
 		struct wl_signal minimized;
 		struct wl_signal fullscreened;
+		struct wl_signal shaded;
+		/* Emitted when view->ssd_mode changes */
+		struct wl_signal decorations;
 		struct wl_signal activated;     /* bool *activated */
 		struct wl_signal always_on_top;
 		/*

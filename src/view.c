@@ -1656,6 +1656,7 @@ view_set_ssd_mode(struct view *view, enum lab_ssd_mode mode)
 	 * within the call tree of ssd_create() and ssd_thickness()
 	 */
 	view->ssd_mode = mode;
+	wl_signal_emit_mutable(&view->events.decorations, NULL);
 
 	if (mode) {
 		decorate(view);
@@ -2449,6 +2450,7 @@ view_set_shade(struct view *view, bool shaded)
 	}
 
 	view->shaded = shaded;
+	wl_signal_emit_mutable(&view->events.shaded, NULL);
 	ssd_enable_shade(view->ssd, view->shaded);
 	/*
 	 * An unmapped view may not have a content tree. When the view
@@ -2497,6 +2499,8 @@ view_init(struct view *view)
 	wl_signal_init(&view->events.maximized);
 	wl_signal_init(&view->events.minimized);
 	wl_signal_init(&view->events.fullscreened);
+	wl_signal_init(&view->events.shaded);
+	wl_signal_init(&view->events.decorations);
 	wl_signal_init(&view->events.activated);
 	wl_signal_init(&view->events.always_on_top);
 	wl_signal_init(&view->events.set_icon);
@@ -2589,6 +2593,8 @@ view_destroy(struct view *view)
 	assert(wl_list_empty(&view->events.maximized.listener_list));
 	assert(wl_list_empty(&view->events.minimized.listener_list));
 	assert(wl_list_empty(&view->events.fullscreened.listener_list));
+	assert(wl_list_empty(&view->events.shaded.listener_list));
+	assert(wl_list_empty(&view->events.decorations.listener_list));
 	assert(wl_list_empty(&view->events.activated.listener_list));
 	assert(wl_list_empty(&view->events.always_on_top.listener_list));
 	assert(wl_list_empty(&view->events.set_icon.listener_list));

@@ -90,6 +90,17 @@ struct toplevel {
 	uint32_t states[MAX_STATES];
 	size_t nr_states;
 
+	/*
+	 * Properties which zcosmic_toplevel_info_v1 does not report and
+	 * labwc_control_v1 does. have_control_state is false until the first
+	 * one arrives, and stays false for a compositor which does not offer
+	 * labwc_control_v1 at all.
+	 */
+	int32_t layer;
+	int32_t shaded;
+	int32_t decorations;
+	bool have_control_state;
+
 	bool selected;
 	struct wl_list link;
 };
@@ -133,10 +144,13 @@ static struct wl_list toplevels;
 static struct zcosmic_toplevel_info_v1 *toplevel_info;
 static struct labwc_control_v1 *control;
 static unsigned int pending_handles;
+static unsigned int pending_control;
 static unsigned int geometry_events;
 static unsigned int geometry_target;
 static unsigned int state_events;
 static unsigned int state_target;
+static unsigned int done_events;
+static unsigned int done_target;
 static uint32_t wait_state;
 static bool wait_state_on;
 static bool updated;
@@ -246,6 +260,17 @@ output_from_wl_output(struct wl_output *wl_output)
 		}
 	}
 	return NULL;
+}
+
+/*
+ * The requests of labwc_control_v1 for a toplevel are only sent once
+ * zcosmic_toplevel_info_v1 has told us the toplevel exists, and both report
+ * their initial state asynchronously.
+ */
+static bool
+initial_state_pending(void)
+{
+	return pending_handles || pending_control;
 }
 
 /* -------------------------- cosmic toplevels -------------------------- */
@@ -371,6 +396,55 @@ static const struct zcosmic_toplevel_handle_v1_listener cosmic_handle_listener =
 	.ext_workspace_leave = cosmic_ext_workspace_leave,
 };
 
+/* ----------------------- labwc control toplevels ----------------------- */
+
+static void
+control_layer(void *data, struct labwc_control_toplevel_v1 *handle,
+		uint32_t layer)
+{
+	struct toplevel *toplevel = data;
+	toplevel->layer = (int32_t)layer;
+	toplevel->have_control_state = true;
+	updated = true;
+}
+
+static void
+control_shaded(void *data, struct labwc_control_toplevel_v1 *handle,
+		int32_t shaded)
+{
+	struct toplevel *toplevel = data;
+	toplevel->shaded = shaded;
+	toplevel->have_control_state = true;
+	updated = true;
+}
+
+static void
+control_decorations(void *data, struct labwc_control_toplevel_v1 *handle,
+		uint32_t mode)
+{
+	struct toplevel *toplevel = data;
+	toplevel->decorations = (int32_t)mode;
+	toplevel->have_control_state = true;
+	updated = true;
+}
+
+static void
+control_done(void *data, struct labwc_control_toplevel_v1 *handle)
+{
+	done_events++;
+	if (pending_control) {
+		pending_control--;
+	}
+	updated = true;
+}
+
+static const struct labwc_control_toplevel_v1_listener control_listener = {
+	.layer = control_layer,
+	.shaded = control_shaded,
+	.decorations = control_decorations,
+	.done = control_done,
+};
+
 /* --------------------------- toplevel list ---------------------------- */
 
 static void
@@ -464,6 +538,18 @@ foreign_toplevel(void *data, struct ext_foreign_toplevel_list_v1 *list,
 	zcosmic_toplevel_handle_v1_add_listener(toplevel->cosmic,
 		&cosmic_handle_listener, toplevel);
 	pending_handles++;
+
+	/*
+	 * Created up front rather than on demand, so that the properties only
+	 * labwc_control_v1 reports are part of every snapshot.
+	 */
+	if (control) {
+		toplevel->control = labwc_control_v1_get_toplevel(control,
+			handle);
+		labwc_control_toplevel_v1_add_listener(toplevel->control,
+			&control_listener, toplevel);
+		pending_control++;
+	}
 }
 
 static void
@@ -616,13 +702,8 @@ select_toplevels(struct selector *selector)
 
 	wl_list_for_each(toplevel, &toplevels, link) {
 		toplevel->selected = selector_matches(selector, toplevel);
-		if (!toplevel->selected) {
-			continue;
-		}
-		matches++;
-		if (!toplevel->control && control) {
-			toplevel->control = labwc_control_v1_get_toplevel(control,
-				toplevel->foreign);
+		if (toplevel->selected) {
+			matches++;
 		}
 	}
 
@@ -637,6 +718,18 @@ static const char *state_names[] = {
 	"activated",
 	"fullscreen",
 	"sticky",
+};
+
+static const char *layer_names[] = {
+	"normal",
+	"top",
+	"bottom",
+};
+
+static const char *decoration_names[] = {
+	"none",
+	"border",
+	"full",
 };
 
 static void
@@ -701,7 +794,31 @@ print_snapshot(void)
 		}
 		printf("]");
 
-		printf(",\n    \"geometry\": [");
+		/*
+		 * Reported by labwc_control_v1 rather than by
+		 * zcosmic_toplevel_info_v1, so null if the compositor does not
+		 * offer it.
+		 */
+		printf(",\n    \"layer\": ");
+		if (!toplevel->have_control_state) {
+			printf("null");
+		} else {
+			print_string(toplevel->layer >= 0 && toplevel->layer < 3
+				? layer_names[toplevel->layer] : "unknown");
+		}
+		printf(",\n    \"shaded\": %s", !toplevel->have_control_state
+			? "null" : (toplevel->shaded ? "true" : "false"));
+		printf(",\n    \"decorations\": ");
+		if (!toplevel->have_control_state) {
+			printf("null");
+		} else {
+			print_string(toplevel->decorations >= 0
+				&& toplevel->decorations < 3
+				? decoration_names[toplevel->decorations]
+				: "unknown");
+		}
+
+		printf(",\n    \"geometry\": [");;
 		for (size_t i = 0; i < toplevel->nr_geometries; i++) {
 			struct geometry *geometry = &toplevel->geometries[i];
 			struct output *output =
@@ -829,6 +946,13 @@ state_changed(void)
 	return state_events >= state_target;
 }
 
+/* The compositor has acknowledged the requests it reports on itself */
+static bool
+control_done_received(void)
+{
+	return done_events >= done_target;
+}
+
 static bool
 toplevel_has_state(struct toplevel *toplevel, uint32_t state)
 {
@@ -912,6 +1036,47 @@ list_command(bool watch)
 	}
 }
 
+/*
+ * Whether a toplevel reports the value that was asked for. Commands which
+ * have nothing reported about them always match.
+ */
+static bool
+control_state_matches(enum control_command command, bool on,
+		const int32_t v[4], struct toplevel *toplevel)
+{
+	switch (command) {
+	case CONTROL_LAYER:
+		return toplevel->layer == v[0];
+	case CONTROL_SHADE:
+		return (toplevel->shaded != 0) == on;
+	case CONTROL_DECORATIONS:
+		return toplevel->decorations == v[0];
+	default:
+		return true;
+	}
+}
+
+/*
+ * How many of the toplevels we acted on did not end up with the value we asked
+ * for. Only meaningful for commands whose effect labwc_control_v1 reports.
+ */
+static unsigned int
+count_refused(enum control_command command, bool on, const int32_t v[4])
+{
+	struct toplevel *toplevel;
+	unsigned int refused = 0;
+
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (!toplevel->selected || !toplevel->have_control_state) {
+			continue;
+		}
+		if (!control_state_matches(command, on, v, toplevel)) {
+			refused++;
+		}
+	}
+	return refused;
+}
+
 static int
 control_command(struct selector *selector, enum control_command command,
 		bool on, const int32_t v[4])
@@ -922,7 +1087,7 @@ control_command(struct selector *selector, enum control_command command,
 	}
 
 	/* Settle before matching, so that identifiers and geometry are known */
-	for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
+	for (int i = 0; i < MAX_ROUNDTRIPS && initial_state_pending(); i++) {
 		if (wl_display_roundtrip(display) == -1) {
 			fprintf(stderr, "error communicating with the compositor\n");
 			return 1;
@@ -1090,19 +1255,26 @@ control_command(struct selector *selector, enum control_command command,
 	case CONTROL_SHADE:
 	case CONTROL_LAYER:
 	case CONTROL_DECORATIONS:
-		/* Nothing reports these, so there is nothing to wait for */
+		/*
+		 * These are the requests whose effect labwc_control_v1 reports
+		 * itself, so the compositor acknowledges them with done. Waiting
+		 * for that is what turns "sent" into "the value read back is the
+		 * one asked for, or the request was refused".
+		 */
+		done_target = done_events + matches;
+		ok = dispatch_until(control_done_received, CONTROL_TIMEOUT_MS);
 		break;
 	}
 	/*
 	 * A request that changes nothing produces no events, and that is
 	 * indistinguishable from a request the compositor ignored: an already
 	 * centered toplevel, a client that snaps its size to a grid, or a
-	 * client that declines to close all look the same. So a timeout is not
-	 * reported as an error; the snapshot is the answer. The one case where
-	 * the outcome is unambiguous is a toplevel that is still there after
-	 * being asked to close.
+	 * client that declines to close all look the same. So a wait that
+	 * found nothing is not reported as an error; the snapshot is the
+	 * answer. The cases where the outcome is unambiguous are reported on
+	 * stderr.
 	 */
-	if (!ok && command == CONTROL_CLOSE) {
+	if (command == CONTROL_CLOSE) {
 		unsigned int left = 0;
 		struct toplevel *t;
 		wl_list_for_each(t, &toplevels, link) {
@@ -1110,7 +1282,17 @@ control_command(struct selector *selector, enum control_command command,
 				left++;
 			}
 		}
-		fprintf(stderr, "note: %u toplevel(s) did not close\n", left);
+		if (!ok && left) {
+			fprintf(stderr,
+				"note: %u toplevel(s) did not close\n", left);
+		}
+	} else {
+		unsigned int refused = count_refused(command, on, v);
+		if (refused) {
+			fprintf(stderr,
+				"note: %u toplevel(s) refused the request\n",
+				refused);
+		}
 	}
 	dispatch_drain(SETTLE_QUIET_MS, CONTROL_TIMEOUT_MS);
 	print_snapshot();
@@ -1129,7 +1311,7 @@ cycle_command(bool forward)
 		return 1;
 	}
 
-	for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
+	for (int i = 0; i < MAX_ROUNDTRIPS && initial_state_pending(); i++) {
 		if (wl_display_roundtrip(display) == -1) {
 			fprintf(stderr, "error communicating with the compositor\n");
 			return 1;
@@ -1363,9 +1545,9 @@ main(int argc, char **argv)
 	} else {
 		static const char * const edge_names[] =
 			{ "left", "right", "up", "down" };
-		static const char * const layer_names[] =
+		static const char * const layer_args[] =
 			{ "normal", "top", "bottom" };
-		static const char * const decoration_names[] =
+		static const char * const decoration_args[] =
 			{ "none", "border", "full" };
 
 		/* Every other command takes a selector first */
@@ -1428,14 +1610,14 @@ main(int argc, char **argv)
 			}
 			break;
 		case ARGS_LAYER:
-			if (nr_rest != 1 || parse_named(rest[0], layer_names,
-					NR_NAMES(layer_names), &v[0])) {
+			if (nr_rest != 1 || parse_named(rest[0], layer_args,
+					NR_NAMES(layer_args), &v[0])) {
 				usage(argv[0]);
 			}
 			break;
 		case ARGS_DECORATION:
-			if (nr_rest != 1 || parse_named(rest[0], decoration_names,
-					NR_NAMES(decoration_names), &v[0])) {
+			if (nr_rest != 1 || parse_named(rest[0], decoration_args,
+					NR_NAMES(decoration_args), &v[0])) {
 				usage(argv[0]);
 			}
 			break;

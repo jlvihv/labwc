@@ -18,11 +18,17 @@ struct control_toplevel {
 	 * NULL once the toplevel has been unmapped. The ext-foreign-toplevel
 	 * handle is destroyed before the view it belongs to, and our destroy
 	 * listener clears the pointer, so a non-NULL handle guarantees that
-	 * ext_handle->data is a live view.
+	 * ext_handle->data is a live view, and that the view listeners below
+	 * are still connected.
 	 */
 	struct wlr_ext_foreign_toplevel_handle_v1 *ext_handle;
 
 	struct wl_listener ext_handle_destroy;
+
+	/* View state changes, so that clients can read back what they set */
+	struct wl_listener view_always_on_top;
+	struct wl_listener view_shaded;
+	struct wl_listener view_decorations;
 };
 
 /*
@@ -68,6 +74,96 @@ static struct view *
 control_toplevel_get_view(struct control_toplevel *toplevel)
 {
 	return toplevel->ext_handle ? toplevel->ext_handle->data : NULL;
+}
+
+static void
+control_toplevel_send_state(struct control_toplevel *toplevel)
+{
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (!view) {
+		return;
+	}
+	labwc_control_toplevel_v1_send_layer(toplevel->resource,
+		(uint32_t)view->layer);
+	labwc_control_toplevel_v1_send_shaded(toplevel->resource,
+		view->shaded);
+	labwc_control_toplevel_v1_send_decorations(toplevel->resource,
+		(uint32_t)view->ssd_mode);
+}
+
+/*
+ * Acknowledge a request whose effect is reported by this object, so that a
+ * client can tell a value it has been sent from the value it asked for. Sent
+ * even when nothing changed, since that is exactly the case a client cannot
+ * distinguish otherwise.
+ */
+static void
+control_toplevel_done(struct control_toplevel *toplevel)
+{
+	labwc_control_toplevel_v1_send_done(toplevel->resource);
+}
+
+/* View signals */
+static void
+handle_view_always_on_top(struct wl_listener *listener, void *data)
+{
+	struct control_toplevel *toplevel =
+		wl_container_of(listener, toplevel, view_always_on_top);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		labwc_control_toplevel_v1_send_layer(toplevel->resource,
+			(uint32_t)view->layer);
+	}
+}
+
+static void
+handle_view_shaded(struct wl_listener *listener, void *data)
+{
+	struct control_toplevel *toplevel =
+		wl_container_of(listener, toplevel, view_shaded);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		labwc_control_toplevel_v1_send_shaded(toplevel->resource,
+			view->shaded);
+	}
+}
+
+static void
+handle_view_decorations(struct wl_listener *listener, void *data)
+{
+	struct control_toplevel *toplevel =
+		wl_container_of(listener, toplevel, view_decorations);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		labwc_control_toplevel_v1_send_decorations(toplevel->resource,
+			(uint32_t)view->ssd_mode);
+	}
+}
+
+static void
+control_toplevel_connect_view(struct control_toplevel *toplevel,
+		struct view *view)
+{
+	toplevel->view_always_on_top.notify = handle_view_always_on_top;
+	wl_signal_add(&view->events.always_on_top,
+		&toplevel->view_always_on_top);
+	toplevel->view_shaded.notify = handle_view_shaded;
+	wl_signal_add(&view->events.shaded, &toplevel->view_shaded);
+	toplevel->view_decorations.notify = handle_view_decorations;
+	wl_signal_add(&view->events.decorations, &toplevel->view_decorations);
+}
+
+static void
+control_toplevel_disconnect_view(struct control_toplevel *toplevel)
+{
+	if (!toplevel->ext_handle) {
+		return;
+	}
+	wl_list_remove(&toplevel->view_always_on_top.link);
+	wl_list_remove(&toplevel->view_shaded.link);
+	wl_list_remove(&toplevel->view_decorations.link);
+	wl_list_remove(&toplevel->ext_handle_destroy.link);
+	toplevel->ext_handle = NULL;
 }
 
 /*
@@ -323,10 +419,10 @@ toplevel_set_layer(struct wl_client *client, struct wl_resource *resource,
 {
 	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
 	struct view *view = control_toplevel_get_view(toplevel);
-	if (!view || layer > LABWC_CONTROL_TOPLEVEL_V1_LAYER_ALWAYS_ON_BOTTOM) {
-		return;
+	if (view && layer <= LABWC_CONTROL_TOPLEVEL_V1_LAYER_ALWAYS_ON_BOTTOM) {
+		view_set_layer(view, (enum view_layer)layer);
 	}
-	view_set_layer(view, (enum view_layer)layer);
+	control_toplevel_done(toplevel);
 }
 
 static void
@@ -337,6 +433,7 @@ toplevel_set_shaded(struct wl_client *client, struct wl_resource *resource)
 	if (view) {
 		view_set_shade(view, true);
 	}
+	control_toplevel_done(toplevel);
 }
 
 static void
@@ -347,6 +444,7 @@ toplevel_unset_shaded(struct wl_client *client, struct wl_resource *resource)
 	if (view) {
 		view_set_shade(view, false);
 	}
+	control_toplevel_done(toplevel);
 }
 
 static void
@@ -355,10 +453,11 @@ toplevel_set_decorations(struct wl_client *client, struct wl_resource *resource,
 {
 	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
 	struct view *view = control_toplevel_get_view(toplevel);
-	if (!view || mode > LABWC_CONTROL_TOPLEVEL_V1_DECORATION_MODE_FULL) {
-		return;
+	if (view && mode <= LABWC_CONTROL_TOPLEVEL_V1_DECORATION_MODE_FULL) {
+		view_set_decorations(view, (enum lab_ssd_mode)mode,
+			/* force_ssd */ false);
 	}
-	view_set_decorations(view, (enum lab_ssd_mode)mode, /* force_ssd */ false);
+	control_toplevel_done(toplevel);
 }
 
 static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
@@ -394,8 +493,7 @@ handle_ext_handle_destroy(struct wl_listener *listener, void *data)
 	struct control_toplevel *toplevel =
 		wl_container_of(listener, toplevel, ext_handle_destroy);
 
-	wl_list_remove(&toplevel->ext_handle_destroy.link);
-	toplevel->ext_handle = NULL;
+	control_toplevel_disconnect_view(toplevel);
 }
 
 static void
@@ -406,9 +504,7 @@ toplevel_resource_destroy(struct wl_resource *resource)
 		return;
 	}
 
-	if (toplevel->ext_handle) {
-		wl_list_remove(&toplevel->ext_handle_destroy.link);
-	}
+	control_toplevel_disconnect_view(toplevel);
 	free(toplevel);
 }
 
@@ -418,6 +514,8 @@ control_get_toplevel(struct wl_client *client, struct wl_resource *resource,
 {
 	struct wlr_ext_foreign_toplevel_handle_v1 *ext_handle =
 		wlr_ext_foreign_toplevel_handle_v1_from_resource(foreign_toplevel);
+	/* ext-foreign.c stores the view in handle->data */
+	struct view *view = ext_handle ? ext_handle->data : NULL;
 
 	struct wl_resource *toplevel_resource = wl_resource_create(client,
 		&labwc_control_toplevel_v1_interface,
@@ -434,12 +532,16 @@ control_get_toplevel(struct wl_client *client, struct wl_resource *resource,
 		toplevel->ext_handle_destroy.notify = handle_ext_handle_destroy;
 		wl_signal_add(&ext_handle->events.destroy,
 			&toplevel->ext_handle_destroy);
+		control_toplevel_connect_view(toplevel, view);
 	}
 
 	wl_resource_set_implementation(toplevel_resource, &toplevel_impl,
 		toplevel, toplevel_resource_destroy);
-}
 
+	/* All initial properties are sent immediately, as required */
+	control_toplevel_send_state(toplevel);
+	control_toplevel_done(toplevel);
+}
 
 /*
  * Focus the next or previous toplevel without opening the window switcher

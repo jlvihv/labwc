@@ -73,17 +73,28 @@
   </interface>
 
   <interface name="labwc_control_toplevel_v1" version="1">
-    <description summary="set the geometry of a toplevel">
+    <description summary="read and set the geometry and state of a toplevel">
       All coordinates are in the compositor's global layout coordinate space,
       the same space wl_output.geometry reports output positions in.
 
-      Requests are applied immediately and are not acknowledged with an event.
-      Clients wanting to know whether a request had the intended effect should
-      watch the geometry event of the corresponding zcosmic_toplevel_handle_v1.
+      Requests are applied immediately and are not acknowledged with an event
+      of their own. Clients wanting to know whether a request had the intended
+      effect should watch the events below, and the geometry event of the
+      corresponding zcosmic_toplevel_handle_v1. Note that a request can be
+      refused, for example a set_decorations for a toplevel which requests its
+      decorations from the client.
+
+      The layer, shaded and decorations events report what labwc knows about
+      the toplevel and are sent on creation and whenever the value changes,
+      whether that change came from a request here or from a keybinding. The
+      done event marks the end of a request which changes one of them, so that
+      a client can tell whether a value it read back is the result of the
+      request it just made.
 
       Because an absolute geometry is only meaningful for a floating view, the
       compositor takes the view out of any state that would otherwise override
-      it (fullscreen, maximized, tiled, shaded) before applying the request.
+      it (fullscreen, maximized, tiled, shaded) before applying a geometry
+      request.
     </description>
 
     <request name="destroy" type="destructor">
@@ -300,5 +311,46 @@
       <entry name="border" value="1"/>
       <entry name="full" value="2" summary="border and title bar"/>
     </enum>
+
+    <event name="layer">
+      <description summary="the stacking layer of the toplevel">
+        Sent on creation and whenever the layer changes.
+      </description>
+      <arg name="layer" type="uint" enum="layer"/>
+    </event>
+
+    <event name="shaded">
+      <description summary="whether the toplevel is rolled up">
+        Sent on creation and whenever the toplevel is shaded or unshaded.
+      </description>
+      <arg name="shaded" type="int"/>
+    </event>
+
+    <event name="decorations">
+      <description summary="how much of the decorations the toplevel gets">
+        Sent on creation and whenever the decoration mode changes. This is the
+        configured mode: while a toplevel is fullscreen its decorations are
+        hidden but the mode is unchanged.
+      </description>
+      <arg name="mode" type="uint" enum="decoration_mode"/>
+    </event>
+
+    <event name="done">
+      <description summary="the compositor has finished handling a request">
+        Sent after the compositor has finished handling a request which changes
+        one of the properties reported above, and after the events that came
+        out of it. It therefore doubles as an acknowledgement: a client which
+        has just asked for a change can compare the value it has been sent with
+        the one it asked for, and a mismatch means the request was refused.
+
+        A request that changes nothing still gets a done event, which is what
+        makes this usable for that purpose.
+
+        Requests whose effect is reported by another protocol - the geometry,
+        and the states zcosmic-toplevel-info-v1 covers - do not get one, since
+        their outcome is observable there. Neither do changes that were not
+        asked for here, such as those from a keybinding.
+      </description>
+    </event>
   </interface>
 </protocol>
