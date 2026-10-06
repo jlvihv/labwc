@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <poll.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -722,7 +723,7 @@ select_toplevels(struct selector *selector)
 
 /* -------------------------------- output ------------------------------ */
 
-static const char *state_names[] = {
+static const char * const state_names[] = {
 	"maximized",
 	"minimized",
 	"activated",
@@ -730,13 +731,13 @@ static const char *state_names[] = {
 	"sticky",
 };
 
-static const char *layer_names[] = {
+static const char * const layer_names[] = {
 	"normal",
 	"top",
 	"bottom",
 };
 
-static const char *decoration_names[] = {
+static const char * const decoration_names[] = {
 	"none",
 	"border",
 	"full",
@@ -828,7 +829,7 @@ print_snapshot(void)
 				: "unknown");
 		}
 
-		printf(",\n    \"geometry\": [");;
+		printf(",\n    \"geometry\": [");
 		for (size_t i = 0; i < toplevel->nr_geometries; i++) {
 			struct geometry *geometry = &toplevel->geometries[i];
 			struct output *output =
@@ -949,7 +950,8 @@ geometry_updated(void)
 }
 
 /* Any toplevel reported a state change, which is all we can wait for when
- * the request does not name a toplevel, as with cycle. */
+ * the request does not name a toplevel, as with cycle.
+ */
 static bool
 state_changed(void)
 {
@@ -1153,7 +1155,8 @@ control_command(struct selector *selector, enum control_command command,
 	switch (command) {
 	case CONTROL_ACTIVATE:
 		/* Only one toplevel can be the active one, so this is not
-		 * checked with all_selected_state() */
+		 * checked with all_selected_state()
+		 */
 		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
 		break;
 	case CONTROL_MAXIMIZE:
@@ -1489,14 +1492,17 @@ static const struct command_spec {
 };
 
 static void
-usage(const char *argv0)
+usage(FILE *out, const char *argv0)
 {
-	fprintf(stderr,
-		"Usage: %s <command> [args...]\n"
+	fprintf(out,
+		"Usage: %s [options] <command> [args...]\n"
+		"\n"
+		"Query and control toplevels. See labwcctl(1) for the full description.\n"
 		"\n"
 		"Commands:\n"
-		"  list                                  Print a JSON snapshot of all toplevels\n"
-		"  cycle [next|prev]                     Focus the next or previous toplevel\n"
+		"  list [--watch]                        Print a JSON snapshot of all toplevels\n"
+		"  cycle [next|prev]                     Focus the next (default) or previous\n"
+		"                                        toplevel\n"
 		"\n"
 		"  move <selector> <x> <y>               Move to a position\n"
 		"  move-by <selector> <dx> <dy>          Move relative to the current position\n"
@@ -1506,8 +1512,8 @@ usage(const char *argv0)
 		"                                        Move and resize in one step\n"
 		"  center <selector>                     Center on the output\n"
 		"  snap-to-edge <selector> <left|right|up|down> [screen|windows]\n"
-		"                                        Move against an edge of the output,\n"
-		"                                        or of another toplevel\n"
+		"                                        Move against an edge of the output\n"
+		"                                        (default) or of another toplevel\n"
 		"  grow-to-edge <selector> <left|right|up|down>\n"
 		"                                        Grow towards an edge by up to 50%%\n"
 		"  shrink-to-edge <selector> <left|right|up|down>\n"
@@ -1525,18 +1531,58 @@ usage(const char *argv0)
 		"                                        How much of the decorations to draw\n"
 		"\n"
 		"Options:\n"
-		"  -h, --help    Show help message and quit\n"
-		"  -w, --watch   With 'list': print a new snapshot on every change\n"
+		"  -h, --help       Show this help message and quit\n"
+		"  -V, --version    Show the version and quit\n"
+		"  -w, --watch      With 'list': keep running and print a new snapshot\n"
+		"                   whenever something changes\n"
 		"\n"
-		"Selectors:\n"
+		"Selectors (quote them: the shell would otherwise expand '*'):\n"
 		"  <identifier>       Exact ext-foreign-toplevel identifier\n"
 		"  identifier:<str>   Same as above, explicitly\n"
 		"  app_id:<str>       Exact match on the application ID\n"
 		"  title:<str>        Exact match on the window title\n"
 		"  *                  All toplevels\n"
 		"\n"
+		"Notes:\n"
+		"  Every command except 'list' prints the resulting snapshot, so that\n"
+		"  callers can tell whether the request had the intended effect.\n"
+		"  A [on|off] argument defaults to 'on'.\n"
+		"\n"
 		"Coordinates are in the compositor's global layout coordinate space.\n",
 		argv0);
+}
+
+/*
+ * Report a bad invocation on stderr and exit. The caller has already worked
+ * out what is wrong, so this deliberately does not dump the whole help text.
+ */
+static void
+usage_error(const char *fmt, ...)
+{
+	va_list args;
+
+	fputs("labwcctl: ", stderr);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputs("\nTry 'labwcctl --help' for more information.\n", stderr);
+	exit(1);
+}
+
+/*
+ * A named argument is not one of the accepted values. Name the offending
+ * value, the command, and the accepted values, rather than just the command.
+ */
+static void
+usage_error_named(const char *command, const char *what, const char *value,
+		const char * const *names, size_t nr_names)
+{
+	fprintf(stderr, "labwcctl: '%s' is not a valid %s for '%s'; expected ",
+		value, what, command);
+	for (size_t i = 0; i < nr_names; i++) {
+		fprintf(stderr, "%s'%s'", i ? ", " : "", names[i]);
+	}
+	fputs("\nTry 'labwcctl --help' for more information.\n", stderr);
 	exit(1);
 }
 
@@ -1545,6 +1591,7 @@ main(int argc, char **argv)
 {
 	static const struct option long_options[] = {
 		{"help", no_argument, NULL, 'h'},
+		{"version", no_argument, NULL, 'V'},
 		{"watch", no_argument, NULL, 'w'},
 		{0, 0, 0, 0},
 	};
@@ -1556,18 +1603,32 @@ main(int argc, char **argv)
 	 * negative numbers can be given as arguments (getopt would otherwise
 	 * read '-100' as an option). Flags belonging to a command are parsed
 	 * from its own arguments instead, see the 'list' branch below.
+	 *
+	 * opterr is turned off so that getopt does not print its own message
+	 * next to the one usage_error() prints.
 	 */
-	while ((c = getopt_long(argc, argv, "+hw", long_options, NULL)) != -1) {
+	opterr = 0;
+	while ((c = getopt_long(argc, argv, "+hVw", long_options, NULL)) != -1) {
 		switch (c) {
+		case 'h':
+			usage(stdout, argv[0]);
+			return 0;
+		case 'V':
+			printf("labwcctl %s\n", LABWC_VERSION);
+			return 0;
 		case 'w':
 			watch = true;
 			break;
 		default:
-			usage(argv[0]);
+			if (optopt) {
+				usage_error("unknown option '-%c'", optopt);
+			}
+			usage_error("unknown option '%s'", argv[optind - 1]);
 		}
 	}
 	if (optind >= argc) {
-		usage(argv[0]);
+		usage(stderr, argv[0]);
+		return 1;
 	}
 
 	const char *command = argv[optind];
@@ -1588,7 +1649,10 @@ main(int argc, char **argv)
 		}
 	}
 	if (!is_list && !is_cycle && !spec) {
-		usage(argv[0]);
+		usage_error("unknown command '%s'", command);
+	}
+	if (watch && !is_list) {
+		usage_error("'--watch' is only valid with 'list'");
 	}
 
 	if (is_list) {
@@ -1597,12 +1661,13 @@ main(int argc, char **argv)
 					|| !strcmp(args[i], "-w")) {
 				watch = true;
 			} else {
-				usage(argv[0]);
+				usage_error("unexpected argument '%s' for 'list'",
+					args[i]);
 			}
 		}
 	} else if (is_cycle) {
 		if (nr_args > 1) {
-			usage(argv[0]);
+			usage_error("'cycle' takes at most one argument");
 		}
 		if (nr_args == 1) {
 			if (!strcmp(args[0], "next")) {
@@ -1610,20 +1675,25 @@ main(int argc, char **argv)
 			} else if (!strcmp(args[0], "prev")) {
 				forward = false;
 			} else {
-				usage(argv[0]);
+				usage_error("'%s' is not 'next' or 'prev'", args[0]);
 			}
 		}
 	} else {
-		static const char * const edge_names[] =
-			{ "left", "right", "up", "down" };
-		static const char * const layer_args[] =
-			{ "normal", "top", "bottom" };
-		static const char * const decoration_args[] =
-			{ "none", "border", "full" };
+		static const char * const edge_names[] = {
+			"left", "right", "up", "down" };
+		static const char * const layer_args[] = {
+			"normal", "top", "bottom" };
+		static const char * const decoration_args[] = {
+			"none", "border", "full" };
 
 		/* Every other command takes a selector first */
-		if (nr_args < 1 || !selector_parse(args[0], &selector)) {
-			usage(argv[0]);
+		if (nr_args < 1) {
+			usage_error("'%s' requires a selector", command);
+		}
+		if (!selector_parse(args[0], &selector)) {
+			usage_error("'%s' is not a valid selector; expected '*', "
+				"'app_id:<value>', 'title:<value>' or a toplevel "
+				"identifier", args[0]);
 		}
 		char * const *rest = args + 1;
 		int nr_rest = nr_args - 1;
@@ -1631,33 +1701,58 @@ main(int argc, char **argv)
 		switch (spec->args) {
 		case ARGS_NONE:
 			if (nr_rest) {
-				usage(argv[0]);
+				usage_error("'%s' takes no further arguments",
+					command);
 			}
 			break;
 		case ARGS_ONOFF:
-			if (nr_rest > 1 || (nr_rest == 1
-					&& parse_onoff(rest[0], &on))) {
-				usage(argv[0]);
+			if (nr_rest > 1) {
+				usage_error("'%s' takes at most one <on|off> "
+					"argument", command);
+			}
+			if (nr_rest == 1 && parse_onoff(rest[0], &on)) {
+				usage_error("'%s' is not 'on' or 'off'", rest[0]);
 			}
 			break;
 		case ARGS_TWO_INT:
-			if (nr_rest != 2 || parse_int(rest[0], &v[0])
-					|| parse_int(rest[1], &v[1])) {
-				usage(argv[0]);
+			if (nr_rest != 2) {
+				usage_error("'%s' expects two integer arguments",
+					command);
+			}
+			if (parse_int(rest[0], &v[0])) {
+				usage_error("'%s' is not an integer", rest[0]);
+			}
+			if (parse_int(rest[1], &v[1])) {
+				usage_error("'%s' is not an integer", rest[1]);
 			}
 			break;
 		case ARGS_FOUR_INT:
-			if (nr_rest != 4 || parse_int(rest[0], &v[0])
-					|| parse_int(rest[1], &v[1])
-					|| parse_int(rest[2], &v[2])
-					|| parse_int(rest[3], &v[3])) {
-				usage(argv[0]);
+			if (nr_rest != 4) {
+				usage_error("'%s' expects four integer arguments",
+					command);
+			}
+			if (parse_int(rest[0], &v[0])) {
+				usage_error("'%s' is not an integer", rest[0]);
+			}
+			if (parse_int(rest[1], &v[1])) {
+				usage_error("'%s' is not an integer", rest[1]);
+			}
+			if (parse_int(rest[2], &v[2])) {
+				usage_error("'%s' is not an integer", rest[2]);
+			}
+			if (parse_int(rest[3], &v[3])) {
+				usage_error("'%s' is not an integer", rest[3]);
 			}
 			break;
 		case ARGS_EDGE:
-			if (nr_rest != 1 || parse_named(rest[0], edge_names,
+			if (nr_rest != 1) {
+				usage_error("'%s' expects one edge: "
+					"<left|right|up|down>", command);
+			}
+			if (parse_named(rest[0], edge_names,
 					NR_NAMES(edge_names), &v[0])) {
-				usage(argv[0]);
+				usage_error_named(command, "edge", rest[0],
+					edge_names, NR_NAMES(edge_names));
 			}
 			break;
 		case ARGS_EDGE_SNAP:
@@ -1666,30 +1761,47 @@ main(int argc, char **argv)
 			 * another toplevel, which is what the MoveToEdge action does
 			 * by default, is a separate thing to ask for.
 			 */
-			if (nr_rest < 1 || nr_rest > 2
-					|| parse_named(rest[0], edge_names,
-						NR_NAMES(edge_names), &v[0])) {
-				usage(argv[0]);
+			if (nr_rest < 1 || nr_rest > 2) {
+				usage_error("'%s' expects an edge and an optional "
+					"<screen|windows>", command);
+			}
+			if (parse_named(rest[0], edge_names,
+					NR_NAMES(edge_names), &v[0])) {
+				usage_error_named(command, "edge", rest[0],
+					edge_names, NR_NAMES(edge_names));
 			}
 			if (nr_rest == 2) {
-				static const char * const snap_names[] =
-					{ "screen", "windows" };
+				static const char * const snap_names[] = {
+					"screen", "windows" };
 				if (parse_named(rest[1], snap_names,
 						NR_NAMES(snap_names), &v[1])) {
-					usage(argv[0]);
+					usage_error_named(command, "snap target",
+						rest[1], snap_names,
+						NR_NAMES(snap_names));
 				}
 			}
 			break;
 		case ARGS_LAYER:
-			if (nr_rest != 1 || parse_named(rest[0], layer_args,
+			if (nr_rest != 1) {
+				usage_error("'%s' expects a layer: "
+					"<normal|top|bottom>", command);
+			}
+			if (parse_named(rest[0], layer_args,
 					NR_NAMES(layer_args), &v[0])) {
-				usage(argv[0]);
+				usage_error_named(command, "layer", rest[0],
+					layer_args, NR_NAMES(layer_args));
 			}
 			break;
 		case ARGS_DECORATION:
-			if (nr_rest != 1 || parse_named(rest[0], decoration_args,
+			if (nr_rest != 1) {
+				usage_error("'%s' expects a decoration mode: "
+					"<none|border|full>", command);
+			}
+			if (parse_named(rest[0], decoration_args,
 					NR_NAMES(decoration_args), &v[0])) {
-				usage(argv[0]);
+				usage_error_named(command, "decoration mode",
+					rest[0], decoration_args,
+					NR_NAMES(decoration_args));
 			}
 			break;
 		}

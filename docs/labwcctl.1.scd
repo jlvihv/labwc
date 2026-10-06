@@ -18,7 +18,9 @@ _labwcctl_ [options...] _move-resize_ <selector> <x> <y> <width> <height>
 
 _labwcctl_ [options...] _center_ <selector>
 
-_labwcctl_ [options...] _snap-to-edge_|_grow-to-edge_|_shrink-to-edge_ <selector> <edge>
+_labwcctl_ [options...] _snap-to-edge_ <selector> <left|right|up|down> [screen|windows]
+
+_labwcctl_ [options...] _grow-to-edge_|_shrink-to-edge_ <selector> <left|right|up|down>
 
 _labwcctl_ [options...] _focus_ <selector>
 
@@ -54,6 +56,9 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 
 *-h, --help*
 	Show help message and quit.
+
+*-V, --version*
+	Show the version and quit.
 
 *-w, --watch*
 	With _list_, keep running and print a new snapshot whenever something
