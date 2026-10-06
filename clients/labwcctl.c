@@ -59,6 +59,8 @@
 #define MAX_ROUNDTRIPS 10
 /* How long to wait for the compositor and the client to agree on a change */
 #define CONTROL_TIMEOUT_MS 500
+/* How long to keep listening after the requested change has been observed */
+#define SETTLE_QUIET_MS 60
 
 struct output {
 	struct wl_output *wl_output;
@@ -110,6 +112,10 @@ enum control_command {
 	CONTROL_MOVE_RESIZE,
 	CONTROL_ACTIVATE,
 	CONTROL_CLOSE,
+	CONTROL_MAXIMIZE,
+	CONTROL_MINIMIZE,
+	CONTROL_FULLSCREEN,
+	CONTROL_STICKY,
 };
 
 static struct wl_display *display;
@@ -120,6 +126,8 @@ static struct labwc_control_v1 *control;
 static unsigned int pending_handles;
 static unsigned int geometry_events;
 static unsigned int geometry_target;
+static uint32_t wait_state;
+static bool wait_state_on;
 static bool updated;
 
 /*
@@ -717,6 +725,37 @@ print_snapshot(void)
 /* ------------------------------- waiting ------------------------------ */
 
 /*
+ * Wait for events and dispatch them. Returns false if nothing arrived within
+ * <timeout_ms> or if the connection broke.
+ */
+static bool
+dispatch_events(int timeout_ms)
+{
+	struct pollfd pfd = {
+		.fd = wl_display_get_fd(display),
+		.events = POLLIN,
+	};
+
+	while (wl_display_prepare_read(display) != 0) {
+		if (wl_display_dispatch_pending(display) == -1) {
+			return false;
+		}
+	}
+	if (wl_display_flush(display) == -1 && errno != EAGAIN) {
+		wl_display_cancel_read(display);
+		return false;
+	}
+	if (poll(&pfd, 1, timeout_ms) <= 0) {
+		wl_display_cancel_read(display);
+		return false;
+	}
+	if (wl_display_read_events(display) == -1) {
+		return false;
+	}
+	return wl_display_dispatch_pending(display) != -1;
+}
+
+/*
  * Dispatch events until <done>() returns true or <timeout_ms> have passed.
  *
  * No request of labwc_control_v1 is acknowledged. Moving a window means the
@@ -728,41 +767,40 @@ static bool
 dispatch_until(bool (*done)(void), int timeout_ms)
 {
 	int64_t deadline = now_ms() + timeout_ms;
-	struct pollfd pfd = {
-		.fd = wl_display_get_fd(display),
-		.events = POLLIN,
-	};
 
 	while (!done()) {
 		int64_t remaining = deadline - now_ms();
 		if (remaining <= 0) {
 			break;
 		}
-
-		while (wl_display_prepare_read(display) != 0) {
-			if (wl_display_dispatch_pending(display) == -1) {
-				return false;
-			}
-		}
-		if (wl_display_flush(display) == -1 && errno != EAGAIN) {
-			wl_display_cancel_read(display);
-			return false;
-		}
-
-		int ret = poll(&pfd, 1, (int)remaining);
-		if (ret <= 0) {
-			wl_display_cancel_read(display);
+		if (!dispatch_events((int)remaining)) {
 			break;
-		}
-		if (wl_display_read_events(display) == -1) {
-			return false;
-		}
-		if (wl_display_dispatch_pending(display) == -1) {
-			return false;
 		}
 	}
 
 	return done();
+}
+
+/*
+ * Keep dispatching until events stop arriving.
+ *
+ * A state change and the geometry that goes with it do not arrive together:
+ * the compositor reports the new state as soon as it has configured the
+ * client, but the geometry only once the client has committed. Without this
+ * the snapshot would show the new state with the geometry it had before.
+ */
+static void
+dispatch_drain(int quiet_ms, int timeout_ms)
+{
+	int64_t deadline = now_ms() + timeout_ms;
+
+	while (now_ms() < deadline) {
+		int64_t remaining = deadline - now_ms();
+		int wait = remaining < quiet_ms ? (int)remaining : quiet_ms;
+		if (!dispatch_events(wait)) {
+			break;
+		}
+	}
 }
 
 static bool
@@ -772,28 +810,44 @@ geometry_updated(void)
 }
 
 static bool
-toplevel_is_activated(struct toplevel *toplevel)
+toplevel_has_state(struct toplevel *toplevel, uint32_t state)
 {
 	for (size_t i = 0; i < toplevel->nr_states; i++) {
-		if (toplevel->states[i]
-				== ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED) {
+		if (toplevel->states[i] == state) {
 			return true;
 		}
 	}
 	return false;
 }
 
-/* At least one of the toplevels we acted on is the active window now */
+/* At least one of the toplevels we acted on reports the state now */
 static bool
-selected_activated(void)
+any_selected_state(void)
 {
 	struct toplevel *toplevel;
 	wl_list_for_each(toplevel, &toplevels, link) {
-		if (toplevel->selected && toplevel_is_activated(toplevel)) {
+		if (toplevel->selected
+				&& toplevel_has_state(toplevel, wait_state)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+/* All of the toplevels we acted on report (or no longer report) the state */
+static bool
+all_selected_state(void)
+{
+	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (!toplevel->selected) {
+			continue;
+		}
+		if (toplevel_has_state(toplevel, wait_state) != wait_state_on) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /* All of the toplevels we acted on are gone */
@@ -840,7 +894,7 @@ list_command(bool watch)
 
 static int
 control_command(struct selector *selector, enum control_command command,
-		int32_t x, int32_t y, int32_t width, int32_t height)
+		bool on, int32_t x, int32_t y, int32_t width, int32_t height)
 {
 	if (!control) {
 		fprintf(stderr, "compositor does not support labwc_control_v1\n");
@@ -884,6 +938,42 @@ control_command(struct selector *selector, enum control_command command,
 		case CONTROL_CLOSE:
 			labwc_control_toplevel_v1_close(toplevel->control);
 			break;
+		case CONTROL_MAXIMIZE:
+			if (on) {
+				labwc_control_toplevel_v1_set_maximized(
+					toplevel->control);
+			} else {
+				labwc_control_toplevel_v1_unset_maximized(
+					toplevel->control);
+			}
+			break;
+		case CONTROL_MINIMIZE:
+			if (on) {
+				labwc_control_toplevel_v1_set_minimized(
+					toplevel->control);
+			} else {
+				labwc_control_toplevel_v1_unset_minimized(
+					toplevel->control);
+			}
+			break;
+		case CONTROL_FULLSCREEN:
+			if (on) {
+				labwc_control_toplevel_v1_set_fullscreen(
+					toplevel->control);
+			} else {
+				labwc_control_toplevel_v1_unset_fullscreen(
+					toplevel->control);
+			}
+			break;
+		case CONTROL_STICKY:
+			if (on) {
+				labwc_control_toplevel_v1_set_sticky(
+					toplevel->control);
+			} else {
+				labwc_control_toplevel_v1_unset_sticky(
+					toplevel->control);
+			}
+			break;
 		}
 	}
 
@@ -900,7 +990,29 @@ control_command(struct selector *selector, enum control_command command,
 		ok = dispatch_until(geometry_updated, CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_ACTIVATE:
-		ok = dispatch_until(selected_activated, CONTROL_TIMEOUT_MS);
+		/* Only one toplevel can be the active one */
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
+		ok = dispatch_until(any_selected_state, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_MAXIMIZE:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED;
+		wait_state_on = on;
+		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_MINIMIZE:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED;
+		wait_state_on = on;
+		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_FULLSCREEN:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN;
+		wait_state_on = on;
+		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
+		break;
+	case CONTROL_STICKY:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_STICKY;
+		wait_state_on = on;
+		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_CLOSE:
 		ok = dispatch_until(selected_closed, CONTROL_TIMEOUT_MS);
@@ -909,6 +1021,7 @@ control_command(struct selector *selector, enum control_command command,
 	if (!ok) {
 		fprintf(stderr, "timed out waiting for the compositor\n");
 	}
+	dispatch_drain(SETTLE_QUIET_MS, CONTROL_TIMEOUT_MS);
 	print_snapshot();
 	return 0;
 }
@@ -943,6 +1056,10 @@ usage(const char *argv0)
 		"                                        Move and resize matching toplevels\n"
 		"  focus <selector>                      Make matching toplevels the active window\n"
 		"  close <selector>                      Ask matching toplevels to close\n"
+		"  maximize <selector> [on|off]          Maximize or restore matching toplevels\n"
+		"  minimize <selector> [on|off]          Minimize or restore matching toplevels\n"
+		"  fullscreen <selector> [on|off]        Fullscreen or restore matching toplevels\n"
+		"  sticky <selector> [on|off]            Show matching toplevels on all workspaces\n"
 		"\n"
 		"Options:\n"
 		"  -h, --help    Show help message and quit\n"
@@ -990,6 +1107,7 @@ main(int argc, char **argv)
 	struct selector selector = { 0 };
 	int32_t x = 0, y = 0, width = 0, height = 0;
 	enum control_command control_command_type = CONTROL_MOVE;
+	bool on = true;
 
 	if (!strcmp(command, "list")) {
 		if (nr_args) {
@@ -1028,6 +1146,31 @@ main(int argc, char **argv)
 			usage(argv[0]);
 		}
 		control_command_type = CONTROL_CLOSE;
+	} else if (!strcmp(command, "maximize") || !strcmp(command, "minimize")
+			|| !strcmp(command, "fullscreen")
+			|| !strcmp(command, "sticky")) {
+		if (nr_args < 1 || nr_args > 2
+				|| !selector_parse(args[0], &selector)) {
+			usage(argv[0]);
+		}
+		if (nr_args == 2) {
+			if (!strcmp(args[1], "on")) {
+				on = true;
+			} else if (!strcmp(args[1], "off")) {
+				on = false;
+			} else {
+				usage(argv[0]);
+			}
+		}
+		if (!strcmp(command, "maximize")) {
+			control_command_type = CONTROL_MAXIMIZE;
+		} else if (!strcmp(command, "minimize")) {
+			control_command_type = CONTROL_MINIMIZE;
+		} else if (!strcmp(command, "fullscreen")) {
+			control_command_type = CONTROL_FULLSCREEN;
+		} else {
+			control_command_type = CONTROL_STICKY;
+		}
 	} else {
 		usage(argv[0]);
 	}
@@ -1062,6 +1205,6 @@ main(int argc, char **argv)
 		return 0;
 	}
 
-	return control_command(&selector, control_command_type,
+	return control_command(&selector, control_command_type, on,
 		x, y, width, height);
 }

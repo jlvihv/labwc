@@ -284,6 +284,8 @@ struct view {
 		struct wl_signal new_outputs;
 		/* Emitted when view->current changes (see view_moved()) */
 		struct wl_signal new_geometry;
+		/* Emitted when view->visible_on_all_workspaces changes */
+		struct wl_signal new_omnipresent;
 		struct wl_signal maximized;
 		struct wl_signal minimized;
 		struct wl_signal fullscreened;
@@ -564,6 +566,7 @@ void view_toggle_decorations(struct view *view);
 void view_set_layer(struct view *view, enum view_layer layer);
 void view_toggle_always_on_top(struct view *view);
 void view_toggle_always_on_bottom(struct view *view);
+void view_set_visible_on_all_workspaces(struct view *view, bool visible);
 void view_toggle_visible_on_all_workspaces(struct view *view);
 
 bool view_is_tiled(struct view *view);

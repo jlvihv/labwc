@@ -97,7 +97,7 @@ handle_send_state(struct cosmic_toplevel_handle *handle)
 	 * Build the state array on the stack. wl_array_release() is never
 	 * called on it, so nothing is ever freed.
 	 */
-	uint32_t states[4];
+	uint32_t states[5];
 	size_t len = 0;
 
 	if (view->maximized != VIEW_AXIS_NONE) {
@@ -111,6 +111,9 @@ handle_send_state(struct cosmic_toplevel_handle *handle)
 	}
 	if (handle->toplevel->activated) {
 		states[len++] = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
+	}
+	if (view->visible_on_all_workspaces) {
+		states[len++] = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_STICKY;
 	}
 
 	struct wl_array state = {
@@ -294,6 +297,14 @@ handle_new_outputs(struct wl_listener *listener, void *data)
 }
 
 static void
+handle_new_omnipresent(struct wl_listener *listener, void *data)
+{
+	struct cosmic_toplevel *toplevel =
+		wl_container_of(listener, toplevel, on_view.new_omnipresent);
+	toplevel_sync_state(toplevel);
+}
+
+static void
 handle_maximized(struct wl_listener *listener, void *data)
 {
 	struct cosmic_toplevel *toplevel =
@@ -466,6 +477,7 @@ cosmic_toplevel_init(struct cosmic_toplevel *toplevel, struct view *view)
 
 	CONNECT_SIGNAL(view, &toplevel->on_view, new_geometry);
 	CONNECT_SIGNAL(view, &toplevel->on_view, new_outputs);
+	CONNECT_SIGNAL(view, &toplevel->on_view, new_omnipresent);
 	CONNECT_SIGNAL(view, &toplevel->on_view, maximized);
 	CONNECT_SIGNAL(view, &toplevel->on_view, minimized);
 	CONNECT_SIGNAL(view, &toplevel->on_view, fullscreened);
@@ -477,6 +489,7 @@ cosmic_toplevel_finish(struct cosmic_toplevel *toplevel)
 {
 	wl_list_remove(&toplevel->on_view.new_geometry.link);
 	wl_list_remove(&toplevel->on_view.new_outputs.link);
+	wl_list_remove(&toplevel->on_view.new_omnipresent.link);
 	wl_list_remove(&toplevel->on_view.maximized.link);
 	wl_list_remove(&toplevel->on_view.minimized.link);
 	wl_list_remove(&toplevel->on_view.fullscreened.link);

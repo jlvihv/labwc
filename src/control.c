@@ -147,6 +147,86 @@ toplevel_close(struct wl_client *client, struct wl_resource *resource)
 	}
 }
 
+static void
+toplevel_set_maximized(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_maximize(view, VIEW_AXIS_BOTH);
+	}
+}
+
+static void
+toplevel_unset_maximized(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_maximize(view, VIEW_AXIS_NONE);
+	}
+}
+
+static void
+toplevel_set_minimized(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_minimize(view, true);
+	}
+}
+
+static void
+toplevel_unset_minimized(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_minimize(view, false);
+	}
+}
+
+static void
+toplevel_set_fullscreen(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_fullscreen(view, true);
+	}
+}
+
+static void
+toplevel_unset_fullscreen(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_fullscreen(view, false);
+	}
+}
+
+static void
+toplevel_set_sticky(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_visible_on_all_workspaces(view, true);
+	}
+}
+
+static void
+toplevel_unset_sticky(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_visible_on_all_workspaces(view, false);
+	}
+}
+
 static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
 	.destroy = handle_destroy,
 	.move_to = toplevel_move_to,
@@ -154,6 +234,14 @@ static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
 	.move_resize_to = toplevel_move_resize_to,
 	.activate = toplevel_activate,
 	.close = toplevel_close,
+	.set_maximized = toplevel_set_maximized,
+	.unset_maximized = toplevel_unset_maximized,
+	.set_minimized = toplevel_set_minimized,
+	.unset_minimized = toplevel_unset_minimized,
+	.set_fullscreen = toplevel_set_fullscreen,
+	.unset_fullscreen = toplevel_unset_fullscreen,
+	.set_sticky = toplevel_set_sticky,
+	.unset_sticky = toplevel_unset_sticky,
 };
 
 static void

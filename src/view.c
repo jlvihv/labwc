@@ -1584,11 +1584,23 @@ view_toggle_always_on_bottom(struct view *view)
 }
 
 void
+view_set_visible_on_all_workspaces(struct view *view, bool visible)
+{
+	assert(view);
+	if (view->visible_on_all_workspaces == visible) {
+		return;
+	}
+	view->visible_on_all_workspaces = visible;
+	ssd_update_geometry(view->ssd);
+	wl_signal_emit_mutable(&view->events.new_omnipresent, NULL);
+}
+
+void
 view_toggle_visible_on_all_workspaces(struct view *view)
 {
 	assert(view);
-	view->visible_on_all_workspaces = !view->visible_on_all_workspaces;
-	ssd_update_geometry(view->ssd);
+	view_set_visible_on_all_workspaces(view,
+		!view->visible_on_all_workspaces);
 }
 
 void
@@ -2481,6 +2493,7 @@ view_init(struct view *view)
 	wl_signal_init(&view->events.new_title);
 	wl_signal_init(&view->events.new_outputs);
 	wl_signal_init(&view->events.new_geometry);
+	wl_signal_init(&view->events.new_omnipresent);
 	wl_signal_init(&view->events.maximized);
 	wl_signal_init(&view->events.minimized);
 	wl_signal_init(&view->events.fullscreened);
@@ -2572,6 +2585,7 @@ view_destroy(struct view *view)
 	assert(wl_list_empty(&view->events.new_title.listener_list));
 	assert(wl_list_empty(&view->events.new_outputs.listener_list));
 	assert(wl_list_empty(&view->events.new_geometry.listener_list));
+	assert(wl_list_empty(&view->events.new_omnipresent.listener_list));
 	assert(wl_list_empty(&view->events.maximized.listener_list));
 	assert(wl_list_empty(&view->events.minimized.listener_list));
 	assert(wl_list_empty(&view->events.fullscreened.listener_list));

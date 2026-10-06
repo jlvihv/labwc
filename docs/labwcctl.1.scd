@@ -18,6 +18,8 @@ _labwcctl_ [options...] _focus_ <selector>
 
 _labwcctl_ [options...] _close_ <selector>
 
+_labwcctl_ [options...] _maximize_|_minimize_|_fullscreen_|_sticky_ <selector> [on|off]
+
 # DESCRIPTION
 
 _labwcctl_ reads the toplevel list, state and geometry, and acts on matching
@@ -70,12 +72,28 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 	example to ask the user to save unsaved changes first, so this does not
 	guarantee that the window goes away.
 
+*maximize* <selector> [on|off]
+	Maximize matching toplevels, or restore the geometry they had before
+	they were maximized. Defaults to _on_.
+
+*minimize* <selector> [on|off]
+	Hide matching toplevels, or show them again. Defaults to _on_.
+
+*fullscreen* <selector> [on|off]
+	Make matching toplevels fullscreen, or take them out of fullscreen.
+	Defaults to _on_.
+
+*sticky* <selector> [on|off]
+	Show matching toplevels on all workspaces, or stop doing so. Defaults to
+	_on_. This is what labwc calls omnipresent.
+
 All commands except _list_ print the resulting snapshot, so that callers can
 tell whether the request had the intended effect. Note that none of these
-requests are acknowledged, and that a resize is not synchronous: the
-compositor sends a configure event, the client has to commit the new size, and
-only then is the new geometry reported. _labwcctl_ waits up to 500ms for that
-to happen.
+requests are acknowledged, and that a change is not synchronous: the
+compositor sends a configure event, the client has to commit, and only then
+is the new state reported. _labwcctl_ waits up to 500ms for that to happen,
+and keeps listening until the events stop arriving so that the snapshot does
+not show a new state next to the geometry that went with the old one.
 
 # SELECTORS
 
@@ -147,6 +165,16 @@ Focus a window by its stable identifier:
 Close every window of an application:
 
 	labwcctl close 'app_id:foot'
+
+Tile two windows over the left and right half of a 1280x720 output:
+
+	labwcctl move-resize 'app_id:foot' 0 0 640 720
+	labwcctl move-resize 'title:no-snap-test' 640 0 640 720
+
+Make a window fullscreen, then put it back:
+
+	labwcctl fullscreen 'app_id:mpv'
+	labwcctl fullscreen 'app_id:mpv' off
 
 # SEE ALSO
 

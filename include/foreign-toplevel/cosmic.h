@@ -45,6 +45,7 @@ struct cosmic_toplevel {
 	struct {
 		struct wl_listener new_geometry;
 		struct wl_listener new_outputs;
+		struct wl_listener new_omnipresent;
 		struct wl_listener maximized;
 		struct wl_listener minimized;
 		struct wl_listener fullscreened;

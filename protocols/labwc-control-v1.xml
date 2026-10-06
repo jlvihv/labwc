@@ -11,8 +11,8 @@
   <interface name="labwc_control_v1" version="1">
     <description summary="control toplevels owned by other clients">
       This protocol allows privileged clients to set the absolute geometry of
-      a toplevel owned by another client, to activate it, and to ask it to
-      close.
+      a toplevel owned by another client, to change its state, to activate it,
+      and to ask it to close.
 
       There is no standard protocol for the geometry part. The wlr- and
       ext-foreign-toplevel protocols expose a toplevel's state and allow
@@ -22,7 +22,7 @@
       automation tool - has to rely on this or a private IPC mechanism
       instead.
 
-      The activate and close requests do duplicate
+      The activate, close and set/unset requests do duplicate
       zwlr_foreign_toplevel_management_v1, but they are provided here as well
       because there is no way to correlate a zwlr_foreign_toplevel_handle_v1
       with an ext_foreign_toplevel_handle_v1. Only the latter carries the
@@ -33,7 +33,8 @@
       Toplevels are identified with the handles provided by
       ext-foreign-toplevel-list-v1, so that a client can match what
       zcosmic-toplevel-info-v1 told it about geometry and state with what it
-      is allowed to change here.
+      is allowed to change here. The state requests cover exactly the states
+      zcosmic-toplevel-info-v1 reports.
     </description>
 
     <request name="destroy" type="destructor">
@@ -126,6 +127,54 @@
         This duplicates a request of zwlr_foreign_toplevel_management_v1 for
         the same reason as activate.
       </description>
+    </request>
+
+    <request name="set_maximized">
+      <description summary="maximize the toplevel">
+        Maximizes in both directions. Has no effect on a fullscreen toplevel.
+      </description>
+    </request>
+
+    <request name="unset_maximized">
+      <description summary="restore the toplevel to its previous size">
+        Restores the geometry the toplevel had before it was maximized.
+      </description>
+    </request>
+
+    <request name="set_minimized">
+      <description summary="minimize the toplevel">
+        Hides the toplevel without unmapping it. Any child toplevels are
+        minimized as well.
+      </description>
+    </request>
+
+    <request name="unset_minimized">
+      <description summary="restore a minimized toplevel">
+        Shows the toplevel again and activates it.
+      </description>
+    </request>
+
+    <request name="set_fullscreen">
+      <description summary="make the toplevel fullscreen">
+        The toplevel goes fullscreen on the output it is currently on.
+      </description>
+    </request>
+
+    <request name="unset_fullscreen">
+      <description summary="take the toplevel out of fullscreen">
+        Restores the geometry the toplevel had before it went fullscreen.
+      </description>
+    </request>
+
+    <request name="set_sticky">
+      <description summary="show the toplevel on all workspaces">
+        This is the state zcosmic-toplevel-info-v1 calls sticky, and what
+        labwc calls omnipresent.
+      </description>
+    </request>
+
+    <request name="unset_sticky">
+      <description summary="stop showing the toplevel on all workspaces"/>
     </request>
   </interface>
 </protocol>
