@@ -146,12 +146,24 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 Every command except _list_ prints the resulting snapshot, so that callers
 can tell whether the request had the intended effect.
 
-Note that no request is acknowledged, and that a change is not synchronous:
-the compositor sends a configure event, the client has to commit, and only
-then is the new state reported. _labwcctl_ waits up to 500ms for that, and
-keeps listening until the events stop arriving so that the snapshot does not
-show a new state next to the geometry that went with the old one.
+A change is not synchronous: the compositor sends a configure event, the
+client has to commit, and only then is the new geometry reported. _labwcctl_
+therefore waits for the specific thing it asked for rather than for a fixed
+period:
 
+- geometry commands wait for a geometry event from each toplevel they acted on
+- _focus_ waits for the active toplevel to change
+- _maximize_ and _fullscreen_ wait for the state *and* the geometry, because
+  the compositor reports the new state as soon as it has configured the
+  client, and waiting for the state alone would report the new state next to
+  the geometry that went with the old one
+- _minimize_ and _sticky_ wait for the state, which is all they change
+- _close_ waits for the toplevel to go away
+- _layer_, _shade_ and _decorations_ wait for the acknowledgement described
+  below
+
+Each wait is bounded by 500ms, and a short quiet period afterwards collects
+any follow-up events from a client which acknowledges a configure in stages.
 A request that changes nothing produces no events at all, and that cannot be
 told apart from a request the compositor ignored: an already centered
 toplevel, a client that snaps its size to a grid, and a client that declines

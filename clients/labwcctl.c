@@ -101,6 +101,13 @@ struct toplevel {
 	int32_t decorations;
 	bool have_control_state;
 
+	/*
+	 * Geometry events seen for this toplevel, and the count when the last
+	 * request was sent. Used to tell whether a request moved it.
+	 */
+	unsigned int geometry_events;
+	unsigned int geometry_before;
+
 	bool selected;
 	struct wl_list link;
 };
@@ -153,6 +160,8 @@ static unsigned int done_events;
 static unsigned int done_target;
 static uint32_t wait_state;
 static bool wait_state_on;
+/* Whether the state we are about to wait for was already in place */
+static bool wait_state_satisfied;
 static bool updated;
 
 /*
@@ -284,6 +293,7 @@ cosmic_geometry(void *data, struct zcosmic_toplevel_handle_v1 *handle,
 	size_t i;
 
 	geometry_events++;
+	toplevel->geometry_events++;
 
 	for (i = 0; i < toplevel->nr_geometries; i++) {
 		struct geometry *geometry = &toplevel->geometries[i];
@@ -913,10 +923,10 @@ dispatch_until(bool (*done)(void), int timeout_ms)
 /*
  * Keep dispatching until events stop arriving.
  *
- * A state change and the geometry that goes with it do not arrive together:
- * the compositor reports the new state as soon as it has configured the
- * client, but the geometry only once the client has committed. Without this
- * the snapshot would show the new state with the geometry it had before.
+ * The waits above are precise about what they are waiting for, but a client
+ * which acknowledges a configure in stages produces more than one geometry
+ * event, and the last one is the one worth reporting. This is a bounded safety
+ * net for those follow-up events, not the mechanism the waits rely on.
  */
 static void
 dispatch_drain(int quiet_ms, int timeout_ms)
@@ -992,6 +1002,39 @@ all_selected_state(void)
 		}
 	}
 	return true;
+}
+
+/* All of the toplevels we acted on have been moved or resized */
+static bool
+selected_geometry_changed(void)
+{
+	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		if (!toplevel->selected) {
+			continue;
+		}
+		if (toplevel->geometry_events <= toplevel->geometry_before) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/*
+ * The state event of a request which also moves the toplevel arrives as soon as
+ * the compositor has configured the client, whereas the geometry event only
+ * arrives once the client has committed the new size. Waiting for the state
+ * alone would report the new state next to the geometry that went with the old
+ * one, so wait for both - unless the request was already satisfied, in which
+ * case it changes nothing and no geometry event is coming.
+ */
+static bool
+state_and_geometry_settled(void)
+{
+	if (!all_selected_state()) {
+		return false;
+	}
+	return wait_state_satisfied || selected_geometry_changed();
 }
 
 /* All of the toplevels we acted on are gone */
@@ -1100,7 +1143,48 @@ control_command(struct selector *selector, enum control_command command,
 		return 1;
 	}
 
+	/*
+	 * Work out what we are going to wait for before sending anything, so that
+	 * we can also work out whether the request changes anything at all: a
+	 * request which is already satisfied produces no events, and waiting for
+	 * one would only burn the timeout.
+	 */
+	bool wait_for_state = false;
+	switch (command) {
+	case CONTROL_ACTIVATE:
+		/* Only one toplevel can be the active one, so this is not
+		 * checked with all_selected_state() */
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
+		break;
+	case CONTROL_MAXIMIZE:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED;
+		wait_state_on = on;
+		wait_for_state = true;
+		break;
+	case CONTROL_MINIMIZE:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED;
+		wait_state_on = on;
+		wait_for_state = true;
+		break;
+	case CONTROL_FULLSCREEN:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN;
+		wait_state_on = on;
+		wait_for_state = true;
+		break;
+	case CONTROL_STICKY:
+		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_STICKY;
+		wait_state_on = on;
+		wait_for_state = true;
+		break;
+	default:
+		break;
+	}
+	wait_state_satisfied = wait_for_state && all_selected_state();
+
 	struct toplevel *toplevel;
+	wl_list_for_each(toplevel, &toplevels, link) {
+		toplevel->geometry_before = toplevel->geometry_events;
+	}
 	wl_list_for_each(toplevel, &toplevels, link) {
 		if (!toplevel->selected || !toplevel->control) {
 			continue;
@@ -1225,28 +1309,15 @@ control_command(struct selector *selector, enum control_command command,
 		ok = dispatch_until(geometry_updated, CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_ACTIVATE:
-		/* Only one toplevel can be the active one */
-		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED;
 		ok = dispatch_until(any_selected_state, CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_MAXIMIZE:
-		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MAXIMIZED;
-		wait_state_on = on;
-		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
+	case CONTROL_FULLSCREEN:
+		ok = dispatch_until(state_and_geometry_settled,
+			CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_MINIMIZE:
-		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED;
-		wait_state_on = on;
-		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
-		break;
-	case CONTROL_FULLSCREEN:
-		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_FULLSCREEN;
-		wait_state_on = on;
-		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
-		break;
 	case CONTROL_STICKY:
-		wait_state = ZCOSMIC_TOPLEVEL_HANDLE_V1_STATE_STICKY;
-		wait_state_on = on;
 		ok = dispatch_until(all_selected_state, CONTROL_TIMEOUT_MS);
 		break;
 	case CONTROL_CLOSE:
