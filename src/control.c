@@ -5,6 +5,8 @@
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
 
 #include "common/mem.h"
+#include "config/rcxml.h"
+#include "cycle.h"
 #include "labwc-control-v1-protocol.h"
 #include "labwc.h"
 #include "view.h"
@@ -227,6 +229,138 @@ toplevel_unset_sticky(struct wl_client *client, struct wl_resource *resource)
 	}
 }
 
+static void
+toplevel_center(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		/* A NULL reference box means the usable area of the output */
+		view_center(view, NULL);
+	}
+}
+
+static void
+toplevel_move_by(struct wl_client *client, struct wl_resource *resource,
+		int32_t dx, int32_t dy)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_move_relative(view, dx, dy);
+	}
+}
+
+static void
+toplevel_resize_by(struct wl_client *client, struct wl_resource *resource,
+		int32_t left, int32_t right, int32_t top, int32_t bottom)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_resize_relative(view, left, right, top, bottom);
+	}
+}
+
+/*
+ * The protocol names directions the way the MoveToEdge action documents them,
+ * whereas lab_edge names them after the edges they refer to.
+ */
+static enum lab_edge
+edge_from_protocol(uint32_t edge)
+{
+	switch (edge) {
+	case LABWC_CONTROL_TOPLEVEL_V1_EDGE_LEFT:
+		return LAB_EDGE_LEFT;
+	case LABWC_CONTROL_TOPLEVEL_V1_EDGE_RIGHT:
+		return LAB_EDGE_RIGHT;
+	case LABWC_CONTROL_TOPLEVEL_V1_EDGE_UP:
+		return LAB_EDGE_TOP;
+	case LABWC_CONTROL_TOPLEVEL_V1_EDGE_DOWN:
+		return LAB_EDGE_BOTTOM;
+	default:
+		return LAB_EDGE_NONE;
+	}
+}
+
+static void
+toplevel_snap_to_edge(struct wl_client *client, struct wl_resource *resource,
+		uint32_t edge, int32_t snap_to_windows)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_move_to_edge(view, edge_from_protocol(edge),
+			snap_to_windows != 0);
+	}
+}
+
+static void
+toplevel_grow_to_edge(struct wl_client *client, struct wl_resource *resource,
+		uint32_t edge)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_grow_to_edge(view, edge_from_protocol(edge));
+	}
+}
+
+static void
+toplevel_shrink_to_edge(struct wl_client *client, struct wl_resource *resource,
+		uint32_t edge)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_shrink_to_edge(view, edge_from_protocol(edge));
+	}
+}
+
+static void
+toplevel_set_layer(struct wl_client *client, struct wl_resource *resource,
+		uint32_t layer)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (!view || layer > LABWC_CONTROL_TOPLEVEL_V1_LAYER_ALWAYS_ON_BOTTOM) {
+		return;
+	}
+	view_set_layer(view, (enum view_layer)layer);
+}
+
+static void
+toplevel_set_shaded(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_shade(view, true);
+	}
+}
+
+static void
+toplevel_unset_shaded(struct wl_client *client, struct wl_resource *resource)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (view) {
+		view_set_shade(view, false);
+	}
+}
+
+static void
+toplevel_set_decorations(struct wl_client *client, struct wl_resource *resource,
+		uint32_t mode)
+{
+	struct control_toplevel *toplevel = wl_resource_get_user_data(resource);
+	struct view *view = control_toplevel_get_view(toplevel);
+	if (!view || mode > LABWC_CONTROL_TOPLEVEL_V1_DECORATION_MODE_FULL) {
+		return;
+	}
+	view_set_decorations(view, (enum lab_ssd_mode)mode, /* force_ssd */ false);
+}
+
 static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
 	.destroy = handle_destroy,
 	.move_to = toplevel_move_to,
@@ -242,6 +376,16 @@ static const struct labwc_control_toplevel_v1_interface toplevel_impl = {
 	.unset_fullscreen = toplevel_unset_fullscreen,
 	.set_sticky = toplevel_set_sticky,
 	.unset_sticky = toplevel_unset_sticky,
+	.center = toplevel_center,
+	.move_by = toplevel_move_by,
+	.resize_by = toplevel_resize_by,
+	.snap_to_edge = toplevel_snap_to_edge,
+	.grow_to_edge = toplevel_grow_to_edge,
+	.shrink_to_edge = toplevel_shrink_to_edge,
+	.set_layer = toplevel_set_layer,
+	.set_shaded = toplevel_set_shaded,
+	.unset_shaded = toplevel_unset_shaded,
+	.set_decorations = toplevel_set_decorations,
 };
 
 static void
@@ -296,9 +440,40 @@ control_get_toplevel(struct wl_client *client, struct wl_resource *resource,
 		toplevel, toplevel_resource_destroy);
 }
 
+
+/*
+ * Focus the next or previous toplevel without opening the window switcher
+ * overlay, which is what the NextWindow keybinding does interactively.
+ * Filters default to the configured window switcher settings.
+ */
+static void
+control_cycle(enum lab_cycle_dir direction)
+{
+	struct cycle_filter filter = {
+		.workspace = rc.window_switcher.workspace_filter,
+		.output = CYCLE_OUTPUT_ALL,
+		.app_id = CYCLE_APP_ID_ALL,
+	};
+	cycle_immediate(direction, filter);
+}
+
+static void
+control_cycle_next(struct wl_client *client, struct wl_resource *resource)
+{
+	control_cycle(LAB_CYCLE_DIR_FORWARD);
+}
+
+static void
+control_cycle_prev(struct wl_client *client, struct wl_resource *resource)
+{
+	control_cycle(LAB_CYCLE_DIR_BACKWARD);
+}
+
 static const struct labwc_control_v1_interface control_impl = {
 	.destroy = handle_destroy,
 	.get_toplevel = control_get_toplevel,
+	.cycle_next = control_cycle_next,
+	.cycle_prev = control_cycle_prev,
 };
 
 static void

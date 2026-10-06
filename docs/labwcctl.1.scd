@@ -8,17 +8,27 @@ labwcctl - Query and control toplevels
 
 _labwcctl_ [options...] _list_ [--watch]
 
-_labwcctl_ [options...] _move_ <selector> <x> <y>
+_labwcctl_ [options...] _cycle_ [next|prev]
 
-_labwcctl_ [options...] _resize_ <selector> <width> <height>
+_labwcctl_ [options...] _move_|_move-by_ <selector> <x> <y>
+
+_labwcctl_ [options...] _resize_|_resize-by_ <selector> <width> <height>
 
 _labwcctl_ [options...] _move-resize_ <selector> <x> <y> <width> <height>
+
+_labwcctl_ [options...] _center_ <selector>
+
+_labwcctl_ [options...] _snap-to-edge_|_grow-to-edge_|_shrink-to-edge_ <selector> <edge>
 
 _labwcctl_ [options...] _focus_ <selector>
 
 _labwcctl_ [options...] _close_ <selector>
 
-_labwcctl_ [options...] _maximize_|_minimize_|_fullscreen_|_sticky_ <selector> [on|off]
+_labwcctl_ [options...] _maximize_|_minimize_|_fullscreen_|_sticky_|_shade_ <selector> [on|off]
+
+_labwcctl_ [options...] _layer_ <selector> <normal|top|bottom>
+
+_labwcctl_ [options...] _decorations_ <selector> <none|border|full>
 
 # DESCRIPTION
 
@@ -54,14 +64,45 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 *list*
 	Print a JSON snapshot of all toplevels.
 
+*cycle* [next|prev]
+	Move keyboard focus to the next or previous toplevel in the window
+	switcher order, without opening the window switcher overlay. Defaults to
+	_next_. This acts on whichever toplevel is active, so it takes no
+	selector.
+
 *move* <selector> <x> <y>
 	Move matching toplevels to the given position, keeping their size.
+
+*move-by* <selector> <dx> <dy>
+	Move matching toplevels relative to their current position. Negative
+	values move left or up. Has no effect on a fullscreen toplevel.
 
 *resize* <selector> <width> <height>
 	Resize matching toplevels, keeping their position.
 
+*resize-by* <selector> <width> <height>
+	Grow or shrink matching toplevels by moving their right and bottom
+	edges. Negative values shrink. Has no effect on a fullscreen or
+	maximized toplevel.
+
 *move-resize* <selector> <x> <y> <width> <height>
 	Move and resize matching toplevels in one step.
+
+*center* <selector>
+	Center matching toplevels in the usable area of the output they are on.
+
+*snap-to-edge* <selector> <left|right|up|down> [screen|windows]
+	Move matching toplevels as far as they can go in the given direction.
+	_screen_ stops at the edge of the output, _windows_ also stops at the
+	edge of another toplevel. Defaults to _screen_.
+
+*grow-to-edge* <selector> <left|right|up|down>
+	Grow matching toplevels towards the given edge, by a maximum of 50%.
+
+*shrink-to-edge* <selector> <left|right|up|down>
+	The reverse of _grow-to-edge_. Note that the direction names the edge
+	that stays put: _shrink-to-edge right_ keeps the right edge and pulls
+	the left edge in.
 
 *focus* <selector>
 	Raise matching toplevels and give them keyboard focus. With more than
@@ -70,7 +111,8 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 *close* <selector>
 	Ask matching toplevels to close. The client is free to ignore this, for
 	example to ask the user to save unsaved changes first, so this does not
-	guarantee that the window goes away.
+	guarantee that the window goes away. A toplevel that is still there
+	after being asked to close is reported on stderr.
 
 *maximize* <selector> [on|off]
 	Maximize matching toplevels, or restore the geometry they had before
@@ -87,13 +129,34 @@ setting in *rc.xml*. By default all privileged interfaces are allowed. See
 	Show matching toplevels on all workspaces, or stop doing so. Defaults to
 	_on_. This is what labwc calls omnipresent.
 
-All commands except _list_ print the resulting snapshot, so that callers can
-tell whether the request had the intended effect. Note that none of these
-requests are acknowledged, and that a change is not synchronous: the
-compositor sends a configure event, the client has to commit, and only then
-is the new state reported. _labwcctl_ waits up to 500ms for that to happen,
-and keeps listening until the events stop arriving so that the snapshot does
-not show a new state next to the geometry that went with the old one.
+*shade* <selector> [on|off]
+	Roll matching toplevels up so that only their title bar is left, or
+	unroll them. Defaults to _on_. Has no effect on toplevels without
+	server side decorations.
+
+*layer* <selector> <normal|top|bottom>
+	Put matching toplevels in the given stacking layer. _top_ is what labwc
+	calls always-on-top, _bottom_ always-on-bottom.
+
+*decorations* <selector> <none|border|full>
+	Set how much of the decorations matching toplevels get. Ignored when
+	the toplevel requests decorations from the client and the requested mode
+	would add to them, in the same way as the SetDecorations action.
+
+Every command except _list_ prints the resulting snapshot, so that callers
+can tell whether the request had the intended effect.
+
+Note that no request is acknowledged, and that a change is not synchronous:
+the compositor sends a configure event, the client has to commit, and only
+then is the new state reported. _labwcctl_ waits up to 500ms for that, and
+keeps listening until the events stop arriving so that the snapshot does not
+show a new state next to the geometry that went with the old one.
+
+A request that changes nothing produces no events at all, and that cannot be
+told apart from a request the compositor ignored: an already centered
+toplevel, a client that snaps its size to a grid, and a client that declines
+to close all look the same. A wait that finds nothing is therefore not an
+error, and the snapshot is the answer.
 
 # SELECTORS
 
@@ -175,6 +238,20 @@ Make a window fullscreen, then put it back:
 
 	labwcctl fullscreen 'app_id:mpv'
 	labwcctl fullscreen 'app_id:mpv' off
+
+Lay out two windows side by side using the edges of the output:
+
+	labwcctl snap-to-edge 'app_id:foot' left
+	labwcctl snap-to-edge 'title:no-snap-test' right
+
+Move a window against its neighbour rather than the screen edge:
+
+	labwcctl snap-to-edge 'app_id:foot' right windows
+
+Step through the windows without opening the switcher overlay:
+
+	labwcctl cycle next
+	labwcctl cycle prev
 
 # SEE ALSO
 

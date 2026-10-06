@@ -53,6 +53,23 @@
       <arg name="control_toplevel" type="new_id" interface="labwc_control_toplevel_v1"/>
       <arg name="foreign_toplevel" type="object" interface="ext_foreign_toplevel_handle_v1"/>
     </request>
+
+    <request name="cycle_next">
+      <description summary="focus the next toplevel">
+        Moves keyboard focus to the next toplevel in the window switcher order,
+        as if the user had pressed the NextWindow keybinding. Unlike the
+        keybinding, this does not open the window switcher overlay.
+
+        This is not a request on a toplevel handle because it acts on whichever
+        toplevel is active, not on a particular one.
+      </description>
+    </request>
+
+    <request name="cycle_prev">
+      <description summary="focus the previous toplevel">
+        Same as cycle_next, in the opposite direction.
+      </description>
+    </request>
   </interface>
 
   <interface name="labwc_control_toplevel_v1" version="1">
@@ -176,5 +193,112 @@
     <request name="unset_sticky">
       <description summary="stop showing the toplevel on all workspaces"/>
     </request>
+
+    <request name="center">
+      <description summary="center the toplevel on its output">
+        Centers the toplevel in the usable area of the output it is on.
+      </description>
+    </request>
+
+    <request name="move_by">
+      <description summary="move the toplevel relative to its position">
+        A negative value moves left or up. Has no effect on a fullscreen
+        toplevel.
+      </description>
+      <arg name="dx" type="int"/>
+      <arg name="dy" type="int"/>
+    </request>
+
+    <request name="resize_by">
+      <description summary="resize the toplevel relative to its size">
+        Each argument is the amount by which to move the corresponding edge.
+        Positive values grow the toplevel, negative values shrink it. A
+        negative left or top value grows the toplevel towards the top left,
+        which is what makes this more general than a plain width/height
+        delta.
+
+        Has no effect on a fullscreen or maximized toplevel.
+      </description>
+      <arg name="left" type="int"/>
+      <arg name="right" type="int"/>
+      <arg name="top" type="int"/>
+      <arg name="bottom" type="int"/>
+    </request>
+
+    <request name="snap_to_edge">
+      <description summary="move the toplevel against an edge of its output">
+        Moves the toplevel as far as it can go in the given direction without
+        leaving the usable area of its output.
+      </description>
+      <arg name="edge" type="uint" enum="edge"/>
+      <arg name="snap_to_windows" type="int" summary="non-zero to stop at the edge of another toplevel"/>
+    </request>
+
+    <request name="grow_to_edge">
+      <description summary="grow the toplevel towards an edge of its output">
+        Grows the toplevel by a maximum of 50%. Has no effect on a fullscreen
+        or maximized toplevel.
+      </description>
+      <arg name="edge" type="uint" enum="edge"/>
+    </request>
+
+    <request name="shrink_to_edge">
+      <description summary="shrink the toplevel away from an edge">
+        The reverse of grow_to_edge. Has no effect on a fullscreen or
+        maximized toplevel.
+      </description>
+      <arg name="edge" type="uint" enum="edge"/>
+    </request>
+
+    <request name="set_layer">
+      <description summary="set the stacking layer of the toplevel">
+        A toplevel is always in exactly one layer, so unlike the other state
+        requests this one takes the new value rather than coming in a set and
+        an unset variant.
+      </description>
+      <arg name="layer" type="uint" enum="layer"/>
+    </request>
+
+    <request name="set_shaded">
+      <description summary="shade the toplevel">
+        Rolls the toplevel up so that only its title bar is left. Has no
+        effect on a toplevel without server side decorations.
+      </description>
+    </request>
+
+    <request name="unset_shaded">
+      <description summary="unshade the toplevel"/>
+    </request>
+
+    <request name="set_decorations">
+      <description summary="set the decorations of the toplevel">
+        In the same way as the SetDecorations action, this is ignored when the
+        toplevel requests decorations from the client and the requested mode
+        would add to them.
+      </description>
+      <arg name="mode" type="uint" enum="decoration_mode"/>
+    </request>
+
+    <enum name="edge">
+      <description summary="a direction to move or grow a toplevel in"/>
+      <entry name="left" value="0"/>
+      <entry name="right" value="1"/>
+      <entry name="up" value="2"/>
+      <entry name="down" value="3"/>
+    </enum>
+
+    <enum name="layer">
+      <description summary="stacking layer of a toplevel"/>
+      <entry name="normal" value="0" summary="stacked with the other windows"/>
+      <entry name="always_on_top" value="1" summary="above the other windows"/>
+      <entry name="always_on_bottom" value="2" summary="below the other windows"/>
+    </enum>
+
+    <enum name="decoration_mode">
+      <description summary="how much of the decorations to draw"/>
+      <entry name="none" value="0"/>
+      <entry name="border" value="1"/>
+      <entry name="full" value="2" summary="border and title bar"/>
+    </enum>
   </interface>
 </protocol>

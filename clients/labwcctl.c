@@ -110,12 +110,21 @@ enum control_command {
 	CONTROL_MOVE,
 	CONTROL_RESIZE,
 	CONTROL_MOVE_RESIZE,
+	CONTROL_MOVE_BY,
+	CONTROL_RESIZE_BY,
+	CONTROL_CENTER,
 	CONTROL_ACTIVATE,
 	CONTROL_CLOSE,
 	CONTROL_MAXIMIZE,
 	CONTROL_MINIMIZE,
 	CONTROL_FULLSCREEN,
 	CONTROL_STICKY,
+	CONTROL_SHADE,
+	CONTROL_SNAP_TO_EDGE,
+	CONTROL_GROW_TO_EDGE,
+	CONTROL_SHRINK_TO_EDGE,
+	CONTROL_LAYER,
+	CONTROL_DECORATIONS,
 };
 
 static struct wl_display *display;
@@ -126,6 +135,8 @@ static struct labwc_control_v1 *control;
 static unsigned int pending_handles;
 static unsigned int geometry_events;
 static unsigned int geometry_target;
+static unsigned int state_events;
+static unsigned int state_target;
 static uint32_t wait_state;
 static bool wait_state_on;
 static bool updated;
@@ -305,6 +316,7 @@ cosmic_state(void *data, struct zcosmic_toplevel_handle_v1 *handle,
 	struct toplevel *toplevel = data;
 	size_t nr = state->size / sizeof(uint32_t);
 
+	state_events++;
 	toplevel->nr_states = nr < MAX_STATES ? nr : MAX_STATES;
 	memcpy(toplevel->states, state->data,
 		toplevel->nr_states * sizeof(toplevel->states[0]));
@@ -809,6 +821,14 @@ geometry_updated(void)
 	return geometry_events >= geometry_target;
 }
 
+/* Any toplevel reported a state change, which is all we can wait for when
+ * the request does not name a toplevel, as with cycle. */
+static bool
+state_changed(void)
+{
+	return state_events >= state_target;
+}
+
 static bool
 toplevel_has_state(struct toplevel *toplevel, uint32_t state)
 {
@@ -894,7 +914,7 @@ list_command(bool watch)
 
 static int
 control_command(struct selector *selector, enum control_command command,
-		bool on, int32_t x, int32_t y, int32_t width, int32_t height)
+		bool on, const int32_t v[4])
 {
 	if (!control) {
 		fprintf(stderr, "compositor does not support labwc_control_v1\n");
@@ -922,15 +942,28 @@ control_command(struct selector *selector, enum control_command command,
 		}
 		switch (command) {
 		case CONTROL_MOVE:
-			labwc_control_toplevel_v1_move_to(toplevel->control, x, y);
+			labwc_control_toplevel_v1_move_to(toplevel->control,
+				v[0], v[1]);
 			break;
 		case CONTROL_RESIZE:
 			labwc_control_toplevel_v1_resize_to(toplevel->control,
-				width, height);
+				v[0], v[1]);
 			break;
 		case CONTROL_MOVE_RESIZE:
 			labwc_control_toplevel_v1_move_resize_to(toplevel->control,
-				x, y, width, height);
+				v[0], v[1], v[2], v[3]);
+			break;
+		case CONTROL_MOVE_BY:
+			labwc_control_toplevel_v1_move_by(toplevel->control,
+				v[0], v[1]);
+			break;
+		case CONTROL_RESIZE_BY:
+			/* Grow or shrink the right and bottom edges */
+			labwc_control_toplevel_v1_resize_by(toplevel->control,
+				0, v[0], 0, v[1]);
+			break;
+		case CONTROL_CENTER:
+			labwc_control_toplevel_v1_center(toplevel->control);
 			break;
 		case CONTROL_ACTIVATE:
 			labwc_control_toplevel_v1_activate(toplevel->control);
@@ -974,18 +1007,55 @@ control_command(struct selector *selector, enum control_command command,
 					toplevel->control);
 			}
 			break;
+		case CONTROL_SHADE:
+			if (on) {
+				labwc_control_toplevel_v1_set_shaded(
+					toplevel->control);
+			} else {
+				labwc_control_toplevel_v1_unset_shaded(
+					toplevel->control);
+			}
+			break;
+		case CONTROL_SNAP_TO_EDGE:
+			labwc_control_toplevel_v1_snap_to_edge(toplevel->control,
+				(uint32_t)v[0], v[1]);
+			break;
+		case CONTROL_GROW_TO_EDGE:
+			labwc_control_toplevel_v1_grow_to_edge(toplevel->control,
+				(uint32_t)v[0]);
+			break;
+		case CONTROL_SHRINK_TO_EDGE:
+			labwc_control_toplevel_v1_shrink_to_edge(toplevel->control,
+				(uint32_t)v[0]);
+			break;
+		case CONTROL_LAYER:
+			labwc_control_toplevel_v1_set_layer(toplevel->control,
+				(uint32_t)v[0]);
+			break;
+		case CONTROL_DECORATIONS:
+			labwc_control_toplevel_v1_set_decorations(
+				toplevel->control, (uint32_t)v[0]);
+			break;
 		}
 	}
 
 	/*
 	 * Report what actually happened rather than what we asked for, so that
-	 * callers can tell whether the request had the intended effect.
+	 * callers can tell whether the request had the intended effect. Some of
+	 * these have nothing in zcosmic_toplevel_info_v1 to wait for, so the
+	 * default is to consider them done and rely on the drain below.
 	 */
-	bool ok = false;
+	bool ok = true;
 	switch (command) {
 	case CONTROL_MOVE:
 	case CONTROL_RESIZE:
 	case CONTROL_MOVE_RESIZE:
+	case CONTROL_MOVE_BY:
+	case CONTROL_RESIZE_BY:
+	case CONTROL_CENTER:
+	case CONTROL_SNAP_TO_EDGE:
+	case CONTROL_GROW_TO_EDGE:
+	case CONTROL_SHRINK_TO_EDGE:
 		geometry_target = geometry_events + matches;
 		ok = dispatch_until(geometry_updated, CONTROL_TIMEOUT_MS);
 		break;
@@ -1017,10 +1087,64 @@ control_command(struct selector *selector, enum control_command command,
 	case CONTROL_CLOSE:
 		ok = dispatch_until(selected_closed, CONTROL_TIMEOUT_MS);
 		break;
+	case CONTROL_SHADE:
+	case CONTROL_LAYER:
+	case CONTROL_DECORATIONS:
+		/* Nothing reports these, so there is nothing to wait for */
+		break;
 	}
-	if (!ok) {
-		fprintf(stderr, "timed out waiting for the compositor\n");
+	/*
+	 * A request that changes nothing produces no events, and that is
+	 * indistinguishable from a request the compositor ignored: an already
+	 * centered toplevel, a client that snaps its size to a grid, or a
+	 * client that declines to close all look the same. So a timeout is not
+	 * reported as an error; the snapshot is the answer. The one case where
+	 * the outcome is unambiguous is a toplevel that is still there after
+	 * being asked to close.
+	 */
+	if (!ok && command == CONTROL_CLOSE) {
+		unsigned int left = 0;
+		struct toplevel *t;
+		wl_list_for_each(t, &toplevels, link) {
+			if (t->selected) {
+				left++;
+			}
+		}
+		fprintf(stderr, "note: %u toplevel(s) did not close\n", left);
 	}
+	dispatch_drain(SETTLE_QUIET_MS, CONTROL_TIMEOUT_MS);
+	print_snapshot();
+	return 0;
+}
+
+/*
+ * cycle acts on whichever toplevel is active rather than on a selector, so it
+ * cannot use control_command().
+ */
+static int
+cycle_command(bool forward)
+{
+	if (!control) {
+		fprintf(stderr, "compositor does not support labwc_control_v1\n");
+		return 1;
+	}
+
+	for (int i = 0; i < MAX_ROUNDTRIPS && pending_handles; i++) {
+		if (wl_display_roundtrip(display) == -1) {
+			fprintf(stderr, "error communicating with the compositor\n");
+			return 1;
+		}
+	}
+
+	if (forward) {
+		labwc_control_v1_cycle_next(control);
+	} else {
+		labwc_control_v1_cycle_prev(control);
+	}
+
+	/* We cannot know which toplevel will be focused, so wait for any state */
+	state_target = state_events + 1;
+	dispatch_until(state_changed, CONTROL_TIMEOUT_MS);
 	dispatch_drain(SETTLE_QUIET_MS, CONTROL_TIMEOUT_MS);
 	print_snapshot();
 	return 0;
@@ -1042,6 +1166,75 @@ parse_int(const char *str, int32_t *value)
 	return 0;
 }
 
+static int
+parse_onoff(const char *str, bool *on)
+{
+	if (!strcmp(str, "on")) {
+		*on = true;
+		return 0;
+	}
+	if (!strcmp(str, "off")) {
+		*on = false;
+		return 0;
+	}
+	return -1;
+}
+
+/*
+ * Named arguments are matched to the enum values of the protocol, so the
+ * order of <names> is significant.
+ */
+static int
+parse_named(const char *str, const char * const *names, size_t nr_names,
+		int32_t *value)
+{
+	for (size_t i = 0; i < nr_names; i++) {
+		if (!strcmp(str, names[i])) {
+			*value = (int32_t)i;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+#define NR_NAMES(names) (sizeof(names) / sizeof((names)[0]))
+
+enum command_args {
+	ARGS_NONE,
+	ARGS_ONOFF,
+	ARGS_TWO_INT,
+	ARGS_FOUR_INT,
+	ARGS_EDGE,
+	ARGS_EDGE_SNAP,
+	ARGS_LAYER,
+	ARGS_DECORATION,
+};
+
+static const struct command_spec {
+	const char *name;
+	enum control_command command;
+	enum command_args args;
+} command_specs[] = {
+	{ "move", CONTROL_MOVE, ARGS_TWO_INT },
+	{ "move-by", CONTROL_MOVE_BY, ARGS_TWO_INT },
+	{ "resize", CONTROL_RESIZE, ARGS_TWO_INT },
+	{ "resize-by", CONTROL_RESIZE_BY, ARGS_TWO_INT },
+	{ "move-resize", CONTROL_MOVE_RESIZE, ARGS_FOUR_INT },
+	{ "center", CONTROL_CENTER, ARGS_NONE },
+	{ "focus", CONTROL_ACTIVATE, ARGS_NONE },
+	{ "close", CONTROL_CLOSE, ARGS_NONE },
+	{ "maximize", CONTROL_MAXIMIZE, ARGS_ONOFF },
+	{ "minimize", CONTROL_MINIMIZE, ARGS_ONOFF },
+	{ "fullscreen", CONTROL_FULLSCREEN, ARGS_ONOFF },
+	{ "sticky", CONTROL_STICKY, ARGS_ONOFF },
+	{ "shade", CONTROL_SHADE, ARGS_ONOFF },
+	{ "snap-to-edge", CONTROL_SNAP_TO_EDGE, ARGS_EDGE_SNAP },
+	{ "grow-to-edge", CONTROL_GROW_TO_EDGE, ARGS_EDGE },
+	{ "shrink-to-edge", CONTROL_SHRINK_TO_EDGE, ARGS_EDGE },
+	{ "layer", CONTROL_LAYER, ARGS_LAYER },
+	{ "decorations", CONTROL_DECORATIONS, ARGS_DECORATION },
+};
+
 static void
 usage(const char *argv0)
 {
@@ -1050,16 +1243,33 @@ usage(const char *argv0)
 		"\n"
 		"Commands:\n"
 		"  list                                  Print a JSON snapshot of all toplevels\n"
-		"  move <selector> <x> <y>               Move matching toplevels\n"
-		"  resize <selector> <width> <height>    Resize matching toplevels\n"
+		"  cycle [next|prev]                     Focus the next or previous toplevel\n"
+		"\n"
+		"  move <selector> <x> <y>               Move to a position\n"
+		"  move-by <selector> <dx> <dy>          Move relative to the current position\n"
+		"  resize <selector> <width> <height>    Resize\n"
+		"  resize-by <selector> <width> <height> Grow or shrink the right and bottom edges\n"
 		"  move-resize <selector> <x> <y> <width> <height>\n"
-		"                                        Move and resize matching toplevels\n"
-		"  focus <selector>                      Make matching toplevels the active window\n"
-		"  close <selector>                      Ask matching toplevels to close\n"
-		"  maximize <selector> [on|off]          Maximize or restore matching toplevels\n"
-		"  minimize <selector> [on|off]          Minimize or restore matching toplevels\n"
-		"  fullscreen <selector> [on|off]        Fullscreen or restore matching toplevels\n"
-		"  sticky <selector> [on|off]            Show matching toplevels on all workspaces\n"
+		"                                        Move and resize in one step\n"
+		"  center <selector>                     Center on the output\n"
+		"  snap-to-edge <selector> <left|right|up|down> [screen|windows]\n"
+		"                                        Move against an edge of the output,\n"
+		"                                        or of another toplevel\n"
+		"  grow-to-edge <selector> <left|right|up|down>\n"
+		"                                        Grow towards an edge by up to 50%%\n"
+		"  shrink-to-edge <selector> <left|right|up|down>\n"
+		"                                        Shrink away from an edge\n"
+		"\n"
+		"  focus <selector>                      Make the active window\n"
+		"  close <selector>                      Ask to close\n"
+		"  maximize <selector> [on|off]          Maximize or restore\n"
+		"  minimize <selector> [on|off]          Minimize or restore\n"
+		"  fullscreen <selector> [on|off]        Fullscreen or restore\n"
+		"  sticky <selector> [on|off]            Show on all workspaces\n"
+		"  shade <selector> [on|off]             Roll up to the title bar\n"
+		"  layer <selector> <normal|top|bottom>  Stacking layer\n"
+		"  decorations <selector> <none|border|full>\n"
+		"                                        How much of the decorations to draw\n"
 		"\n"
 		"Options:\n"
 		"  -h, --help    Show help message and quit\n"
@@ -1088,7 +1298,13 @@ main(int argc, char **argv)
 	bool watch = false;
 	int c;
 
-	while ((c = getopt_long(argc, argv, "hw", long_options, NULL)) != -1) {
+	/*
+	 * The '+' stops option parsing at the first non-option argument, so that
+	 * negative numbers can be given as arguments (getopt would otherwise
+	 * read '-100' as an option). Flags belonging to a command are parsed
+	 * from its own arguments instead, see the 'list' branch below.
+	 */
+	while ((c = getopt_long(argc, argv, "+hw", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'w':
 			watch = true;
@@ -1105,74 +1321,125 @@ main(int argc, char **argv)
 	int nr_args = argc - optind - 1;
 	char **args = &argv[optind + 1];
 	struct selector selector = { 0 };
-	int32_t x = 0, y = 0, width = 0, height = 0;
-	enum control_command control_command_type = CONTROL_MOVE;
+	int32_t v[4] = { 0 };
 	bool on = true;
+	bool forward = true;
+	bool is_list = !strcmp(command, "list");
+	bool is_cycle = !strcmp(command, "cycle");
+	const struct command_spec *spec = NULL;
 
-	if (!strcmp(command, "list")) {
-		if (nr_args) {
-			usage(argv[0]);
+	for (size_t i = 0; i < NR_NAMES(command_specs); i++) {
+		if (!strcmp(command, command_specs[i].name)) {
+			spec = &command_specs[i];
+			break;
 		}
-	} else if (!strcmp(command, "move")) {
-		if (nr_args != 3 || !selector_parse(args[0], &selector)
-				|| parse_int(args[1], &x)
-				|| parse_int(args[2], &y)) {
-			usage(argv[0]);
-		}
-		control_command_type = CONTROL_MOVE;
-	} else if (!strcmp(command, "resize")) {
-		if (nr_args != 3 || !selector_parse(args[0], &selector)
-				|| parse_int(args[1], &width)
-				|| parse_int(args[2], &height)) {
-			usage(argv[0]);
-		}
-		control_command_type = CONTROL_RESIZE;
-	} else if (!strcmp(command, "move-resize")) {
-		if (nr_args != 5 || !selector_parse(args[0], &selector)
-				|| parse_int(args[1], &x)
-				|| parse_int(args[2], &y)
-				|| parse_int(args[3], &width)
-				|| parse_int(args[4], &height)) {
-			usage(argv[0]);
-		}
-		control_command_type = CONTROL_MOVE_RESIZE;
-	} else if (!strcmp(command, "focus")) {
-		if (nr_args != 1 || !selector_parse(args[0], &selector)) {
-			usage(argv[0]);
-		}
-		control_command_type = CONTROL_ACTIVATE;
-	} else if (!strcmp(command, "close")) {
-		if (nr_args != 1 || !selector_parse(args[0], &selector)) {
-			usage(argv[0]);
-		}
-		control_command_type = CONTROL_CLOSE;
-	} else if (!strcmp(command, "maximize") || !strcmp(command, "minimize")
-			|| !strcmp(command, "fullscreen")
-			|| !strcmp(command, "sticky")) {
-		if (nr_args < 1 || nr_args > 2
-				|| !selector_parse(args[0], &selector)) {
-			usage(argv[0]);
-		}
-		if (nr_args == 2) {
-			if (!strcmp(args[1], "on")) {
-				on = true;
-			} else if (!strcmp(args[1], "off")) {
-				on = false;
+	}
+	if (!is_list && !is_cycle && !spec) {
+		usage(argv[0]);
+	}
+
+	if (is_list) {
+		for (int i = 0; i < nr_args; i++) {
+			if (!strcmp(args[i], "--watch")
+					|| !strcmp(args[i], "-w")) {
+				watch = true;
 			} else {
 				usage(argv[0]);
 			}
 		}
-		if (!strcmp(command, "maximize")) {
-			control_command_type = CONTROL_MAXIMIZE;
-		} else if (!strcmp(command, "minimize")) {
-			control_command_type = CONTROL_MINIMIZE;
-		} else if (!strcmp(command, "fullscreen")) {
-			control_command_type = CONTROL_FULLSCREEN;
-		} else {
-			control_command_type = CONTROL_STICKY;
+	} else if (is_cycle) {
+		if (nr_args > 1) {
+			usage(argv[0]);
+		}
+		if (nr_args == 1) {
+			if (!strcmp(args[0], "next")) {
+				forward = true;
+			} else if (!strcmp(args[0], "prev")) {
+				forward = false;
+			} else {
+				usage(argv[0]);
+			}
 		}
 	} else {
-		usage(argv[0]);
+		static const char * const edge_names[] =
+			{ "left", "right", "up", "down" };
+		static const char * const layer_names[] =
+			{ "normal", "top", "bottom" };
+		static const char * const decoration_names[] =
+			{ "none", "border", "full" };
+
+		/* Every other command takes a selector first */
+		if (nr_args < 1 || !selector_parse(args[0], &selector)) {
+			usage(argv[0]);
+		}
+		char * const *rest = args + 1;
+		int nr_rest = nr_args - 1;
+
+		switch (spec->args) {
+		case ARGS_NONE:
+			if (nr_rest) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_ONOFF:
+			if (nr_rest > 1 || (nr_rest == 1
+					&& parse_onoff(rest[0], &on))) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_TWO_INT:
+			if (nr_rest != 2 || parse_int(rest[0], &v[0])
+					|| parse_int(rest[1], &v[1])) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_FOUR_INT:
+			if (nr_rest != 4 || parse_int(rest[0], &v[0])
+					|| parse_int(rest[1], &v[1])
+					|| parse_int(rest[2], &v[2])
+					|| parse_int(rest[3], &v[3])) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_EDGE:
+			if (nr_rest != 1 || parse_named(rest[0], edge_names,
+					NR_NAMES(edge_names), &v[0])) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_EDGE_SNAP:
+			/*
+			 * Default to the output edge: snapping to the edge of
+			 * another toplevel, which is what the MoveToEdge action does
+			 * by default, is a separate thing to ask for.
+			 */
+			if (nr_rest < 1 || nr_rest > 2
+					|| parse_named(rest[0], edge_names,
+						NR_NAMES(edge_names), &v[0])) {
+				usage(argv[0]);
+			}
+			if (nr_rest == 2) {
+				static const char * const snap_names[] =
+					{ "screen", "windows" };
+				if (parse_named(rest[1], snap_names,
+						NR_NAMES(snap_names), &v[1])) {
+					usage(argv[0]);
+				}
+			}
+			break;
+		case ARGS_LAYER:
+			if (nr_rest != 1 || parse_named(rest[0], layer_names,
+					NR_NAMES(layer_names), &v[0])) {
+				usage(argv[0]);
+			}
+			break;
+		case ARGS_DECORATION:
+			if (nr_rest != 1 || parse_named(rest[0], decoration_names,
+					NR_NAMES(decoration_names), &v[0])) {
+				usage(argv[0]);
+			}
+			break;
+		}
 	}
 
 	wl_list_init(&outputs);
@@ -1200,11 +1467,13 @@ main(int argc, char **argv)
 		return 1;
 	}
 
-	if (!strcmp(command, "list")) {
+	if (is_list) {
 		list_command(watch);
 		return 0;
 	}
+	if (is_cycle) {
+		return cycle_command(forward);
+	}
 
-	return control_command(&selector, control_command_type, on,
-		x, y, width, height);
+	return control_command(&selector, spec->command, on, v);
 }
